@@ -11,7 +11,7 @@
 // indexing, so it is NOT a valid reference.)
 //
 // The panel runs in 16-bit mode (0x3A = 0x65): RGB565, two bytes per pixel,
-// high byte first. The controller also offers 18-bit (0x66, three bytes), but
+// low byte first (see panel565()). The controller also offers 18-bit (0x66, three bytes), but
 // 16-bit is a third less traffic for colour depth that is invisible here - the
 // emulated modes use at most a 256-entry palette on a 320x320 panel.
 //
@@ -45,6 +45,29 @@ static uint16_t palette[256];
 
 // 0x00RRGGBB -> RGB565.
 #define RGB565(c) ((uint16_t) ((((c) >> 8) & 0xF800) | (((c) >> 5) & 0x07E0) | (((c) >> 3) & 0x001F)))
+
+// This panel latches each 16-bit pixel LOW BYTE FIRST, unlike the 18-bit mode
+// where the first byte sent is the red channel. Determined on hardware: with
+// the bytes the other way round, CGA brown (197,125,0) renders as (230,24,24) -
+// bright red with the green gone - and light grey (197,198,197) as (57,24,49),
+// i.e. everything dark. White survives either way because 0xFFFF is a
+// palindrome, which is why the display stayed readable while every other colour
+// was wrong.
+//
+// Swapping here rather than in the packing loop keeps that loop a straight
+// two-pixels-per-word copy and costs nothing per frame.
+#ifndef PICOCALC_LCD_PIXEL_SWAP
+#define PICOCALC_LCD_PIXEL_SWAP 1
+#endif
+
+static inline uint16_t panel565(const uint32_t color888) {
+    const uint16_t v = RGB565(color888);
+#if PICOCALC_LCD_PIXEL_SWAP
+    return (uint16_t) ((v >> 8) | (v << 8));
+#else
+    return v;
+#endif
+}
 
 uint8_t *text_buffer = NULL;
 static uint8_t *graphics_framebuffer = NULL;
@@ -551,10 +574,10 @@ void __time_critical_func(refresh_lcd)(void) {
     {
         const uint overlay_y = PICOCALC_LCD_HEIGHT - DEBUG_OVERLAY8_ROWS;
         // Blue background so it is unmistakably a text panel and not noise.
-        palette[1] = RGB565(0x000080u);
-        palette[0x0a] = RGB565(0x40FF40u);
-        palette[0x0c] = RGB565(0xFF6060u);
-        palette[0x0f] = RGB565(0xFFFFFFu);
+        palette[1] = panel565(0x000080u);
+        palette[0x0a] = panel565(0x40FF40u);
+        palette[0x0c] = panel565(0xFF6060u);
+        palette[0x0f] = panel565(0xFFFFFFu);
         lcd_set_window(0, overlay_y, PICOCALC_LCD_WIDTH, DEBUG_OVERLAY8_ROWS);
         start_pixels();
         for (uint row = 0; row < DEBUG_OVERLAY8_ROWS; row++) {
@@ -603,7 +626,7 @@ void graphics_set_mode(const enum graphics_mode_t mode) {
 }
 
 void graphics_set_palette(const uint8_t index, const uint32_t color888) {
-    palette[index] = RGB565(color888);
+    palette[index] = panel565(color888);
 }
 
 void graphics_set_buffer(uint8_t *buffer, const uint16_t width, const uint16_t height) {
@@ -686,7 +709,7 @@ void graphics_init(void) {
         for (int i = 0; i < 320; i++)
             idx_line[i] = i * 8 / 320; // 8 bars of 40 px
         // Borrow the palette for the pattern, then clear it again below.
-        for (int i = 0; i < 8; i++) palette[i] = RGB565(bars[i]);
+        for (int i = 0; i < 8; i++) palette[i] = panel565(bars[i]);
 
         lcd_set_window(0, 0, PICOCALC_LCD_WIDTH, PICOCALC_LCD_HEIGHT);
         start_pixels();
