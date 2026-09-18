@@ -619,6 +619,31 @@ void intcall86(uint8_t intnum) {
                     }
                     //printf("Unhandled 10h CPU_AL: 0x%x\r\n", CPU_AL);
                     break;
+                case 0x12: // EGA/VGA alternate function select
+                    switch (CPU_BL) {
+                        case 0x10:
+                            // Get EGA info. Software probes with BL=0x10 and
+                            // treats BL coming back unchanged as "no EGA".
+                            // Gated on ega_vga_enabled so it can be turned off
+                            // at runtime (Ctrl-Alt-F1 on the PicoCalc): most
+                            // games' EGA modes are 320x200 and render 1:1 here,
+                            // but anything that picks a 640-wide mode is
+                            // illegible on a 320-wide panel, so the choice has
+                            // to stay in the user's hands.
+                            if (ega_vga_enabled) {
+                                CPU_BH = 0x00; // colour mode in effect (3Dx)
+                                CPU_BL = 0x03; // 256 KB of display memory
+                                CPU_CH = 0x00; // feature connector bits
+                                CPU_CL = 0x09; // switches: enhanced colour display
+                            }
+                            return;
+                        default:
+                            // Acknowledge the other alternate-select
+                            // subfunctions rather than let callers read them
+                            // as failures.
+                            CPU_AL = 0x12;
+                            return;
+                    }
                 case 0x1A: //get display combination code (ps, vga/mcga)
                     CPU_AL = 0x1A;
                     if (ega_vga_enabled) {

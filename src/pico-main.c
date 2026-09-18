@@ -1033,6 +1033,15 @@ int main(void) {
         if (delay) sleep_us(delay);
         picocalc_kbd_poll();
 
+        // Mouse mode (Ctrl-Alt-M) turns the arrow buttons into pointer motion.
+        // pico-286 emulates a Microsoft serial mouse on COM1; a DOS driver such
+        // as CTMOUSE still has to be loaded for software to see it.
+        {
+            uint8_t mb; int8_t mdx, mdy;
+            if (picocalc_mouse_step(&mb, &mdx, &mdy))
+                sermouseevent(mb, mdx, mdy);
+        }
+
 #if PICOCALC_LCD_SELFTEST
         // Report throughput every 2 s into the debug overlay. exec86() runs
         // `tormoz` instructions per call, so this is emulated KIPS; on a healthy

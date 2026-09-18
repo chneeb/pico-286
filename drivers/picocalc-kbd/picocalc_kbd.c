@@ -24,6 +24,8 @@
 #include "hardware/i2c.h"
 #include "pico/stdlib.h"
 
+#include "printf.h"   // project printf -> DEBUG_VRAM, not a serial port
+
 #include "picocalc_kbd.h"
 #include "picocalc_lcd.h"
 
@@ -132,6 +134,29 @@ static const uint8_t ascii_to_xt[95] = {
     /* { */ 0x1A | NEEDS_SHIFT, /* | */ 0x2B | NEEDS_SHIFT, /* } */ 0x1B | NEEDS_SHIFT,
     /* ~ */ 0x29 | NEEDS_SHIFT,
 };
+
+// ─── Mouse emulation state ─────────────────────────────────────────────────
+// Motion is derived from which arrows are currently held, sampled on a timer,
+// rather than from key events: the two-phase I2C poll drains one FIFO entry per
+// cycle, so event-driven motion would be lumpy and would stall while other keys
+// were being reported.
+#define MOUSE_STEP_US   16000   // ~60 updates/s
+#define MOUSE_SPEED_MIN 3.0f
+#define MOUSE_SPEED_MAX 16.0f   // packets carry 6-bit signed deltas (-32..31)
+#define MOUSE_ACCEL     0.35f
+
+#define MB_RIGHT 0x01           // sermouseevent(): bit0 right, bit1 left
+#define MB_LEFT  0x02
+
+enum { DIR_LEFT, DIR_UP, DIR_DOWN, DIR_RIGHT, DIR_COUNT };
+
+static bool mouse_mode = false;
+static bool arrow_held[DIR_COUNT];
+static uint8_t mouse_buttons = 0;
+static uint8_t mouse_buttons_sent = 0xFF;
+static float mouse_speed = MOUSE_SPEED_MIN;
+static uint64_t last_mouse_us = 0;
+static bool swallow_toggle_key = false;
 
 static bool real_shift_down = false;
 static bool synth_shift_down = false;
@@ -242,6 +267,54 @@ static void handle_event(const uint8_t key, const uint8_t state) {
 
     const bool down = state != KEY_STATE_RELEASED;
 
+    // Ctrl-Alt-M toggles mouse mode. Swallow the matching release too, so the
+    // emulated keyboard never sees a break code without its make.
+    if (key == 'm' || key == 'M') {
+        if (down && ctrl_down && alt_down) {
+            if (state == KEY_STATE_PRESSED) {
+                mouse_mode = !mouse_mode;
+                for (int i = 0; i < DIR_COUNT; i++) arrow_held[i] = false;
+                mouse_buttons = 0;
+                mouse_speed = MOUSE_SPEED_MIN;
+                // The keyboard backlight is otherwise always off, so it is an
+                // unambiguous indicator - a normal build renders no overlay.
+                picocalc_kbd_set_backlight(mouse_mode ? 0x80 : 0x00);
+                printf("MOUSE %s\n", mouse_mode ? "ON" : "OFF");
+            }
+            swallow_toggle_key = true;
+            return;
+        }
+        if (swallow_toggle_key) {
+            if (!down) swallow_toggle_key = false;
+            return;
+        }
+    }
+
+    // In mouse mode the arrows and the two button keys are captured; every
+    // other key still reaches DOS as usual.
+    if (mouse_mode) {
+        int dir = -1;
+        switch (key) {
+            case KEY_LEFT:  dir = DIR_LEFT;  break;
+            case KEY_UP:    dir = DIR_UP;    break;
+            case KEY_DOWN:  dir = DIR_DOWN;  break;
+            case KEY_RIGHT: dir = DIR_RIGHT; break;
+            default: break;
+        }
+        if (dir >= 0) {
+            if (state != KEY_STATE_HOLD) arrow_held[dir] = down;
+            return;
+        }
+        if (key == '[' || key == ']') {
+            const uint8_t bit = (key == '[') ? MB_LEFT : MB_RIGHT;
+            if (state != KEY_STATE_HOLD) {
+                if (down) mouse_buttons |= bit;
+                else mouse_buttons &= ~bit;
+            }
+            return;
+        }
+    }
+
     // Real modifiers pass straight through.
     switch (key) {
         case KEY_MOD_SHL:
@@ -307,6 +380,38 @@ static void handle_event(const uint8_t key, const uint8_t state) {
     }
 }
 
+bool picocalc_mouse_step(uint8_t *buttons, int8_t *dx, int8_t *dy) {
+    if (!mouse_mode) return false;
+
+    const uint64_t now = time_us_64();
+    if (now - last_mouse_us < MOUSE_STEP_US) return false;
+    last_mouse_us = now;
+
+    const bool moving = arrow_held[DIR_LEFT] || arrow_held[DIR_RIGHT] ||
+                        arrow_held[DIR_UP] || arrow_held[DIR_DOWN];
+
+    // Nothing to say: no movement and the buttons already match what the
+    // driver last saw. Staying quiet keeps the serial buffer clear.
+    if (!moving && mouse_buttons == mouse_buttons_sent) {
+        mouse_speed = MOUSE_SPEED_MIN;
+        return false;
+    }
+
+    if (moving) {
+        mouse_speed += MOUSE_ACCEL;
+        if (mouse_speed > MOUSE_SPEED_MAX) mouse_speed = MOUSE_SPEED_MAX;
+    } else {
+        mouse_speed = MOUSE_SPEED_MIN;
+    }
+
+    const int8_t step = (int8_t) mouse_speed;
+    *dx = arrow_held[DIR_LEFT] ? -step : arrow_held[DIR_RIGHT] ? step : 0;
+    *dy = arrow_held[DIR_UP] ? -step : arrow_held[DIR_DOWN] ? step : 0;
+    *buttons = mouse_buttons;
+    mouse_buttons_sent = mouse_buttons;
+    return true;
+}
+
 // ─── Public entry points ───────────────────────────────────────────────────
 
 void keyboard_init(void) {
@@ -318,6 +423,10 @@ void keyboard_init(void) {
 
     real_shift_down = synth_shift_down = ctrl_down = alt_down = false;
     poll_phase = 0;
+    mouse_mode = false;
+    for (int i = 0; i < DIR_COUNT; i++) arrow_held[i] = false;
+    mouse_buttons = 0; mouse_buttons_sent = 0xFF;
+    picocalc_kbd_set_backlight(0x00);
 
     // Drain anything the MCU buffered while we were booting.
     for (int i = 0; i < 16; i++) {

@@ -258,6 +258,24 @@ shape that mapping:
   no physical Shift is down, since emitting a Shift break while the user is
   holding one desyncs the emulated keyboard for the rest of the session.
 
+**Mouse.** The PicoCalc has no pointing device, and pico-286 emulates a mouse
+only as *hardware* — a Microsoft serial mouse on COM1 (`sermouseevent()`). There
+is no `INT 33h` in the emulator, so **a DOS mouse driver must be loaded** (e.g.
+FreeDOS's CTMOUSE, ~7 KB) for software to see a mouse at all.
+
+With a driver loaded, **Ctrl-Alt-M** toggles mouse mode:
+
+| | |
+|---|---|
+| Arrow buttons | pointer movement, with acceleration while held |
+| `[` / `]` | left / right button |
+| Keyboard backlight | lit while mouse mode is on — the only status channel in a build without the debug overlay |
+
+Other keys still reach DOS normally; only the arrows and `[` `]` are captured.
+Motion is sampled on a ~60 Hz timer from which arrows are held, rather than
+driven by key events, because the two-phase I2C poll only drains one event per
+cycle.
+
 The PicoCalc has no keypad, so the emulator's keypad hotkeys are remapped:
 Ctrl-Alt-F1 toggles EGA/VGA, Ctrl-Alt-F2 / Ctrl-Alt-F3 step the CPU throttle.
 Ctrl-Alt-Del works normally. F11 and F12 are not present on the matrix.
@@ -277,7 +295,9 @@ something, e.g. `DOSSHELL` in text mode.
 | PSRAM | working, soak-tested (0 errors, ~5.0 MB/s) |
 | Keyboard — letters, Shift, arrows, Ctrl-Alt-Del | working |
 | Keyboard — CapsLock (synthesised-Shift path) | **not yet verified** |
-| Audio (PWM) | **not yet verified** |
+| Audio (PWM) — AdLib/OPL2 | working |
+| Audio — PC speaker | **silent**: on `PWM_SOUND` builds port 61h drives `PWM_BEEPER` (GP28) directly instead of setting `speakerenabled`, so it never reaches the mixer feeding GP26/27, and GP28 is not wired to audio here |
+| Mouse (Ctrl-Alt-M + CTMOUSE) | **not yet verified** |
 
 #### Disk images on the PicoCalc
 

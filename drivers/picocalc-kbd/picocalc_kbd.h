@@ -47,6 +47,24 @@ void picocalc_kbd_poll(void);
 
 int picocalc_read_battery(void);
 
+// ─── Mouse emulation ───────────────────────────────────────────────────────
+// The PicoCalc has no pointing device, and pico-286 emulates a mouse only as
+// hardware (a Microsoft serial mouse on COM1) - there is no INT 33h in the
+// emulator, so a DOS mouse driver such as CTMOUSE still has to be loaded for
+// software to see one. This just supplies the movement that driver reads.
+//
+// Ctrl-Alt-M toggles mouse mode. While it is on, the four arrow buttons drive
+// the pointer instead of emitting scancodes, and [ and ] are the left and right
+// buttons. The keyboard backlight comes on as an indicator, since a normal
+// build has no other status channel.
+//
+// Call once per pass of the emulation loop. Returns true when a packet should
+// be sent, i.e. pass the values straight to sermouseevent(). Rate-limits
+// itself, and derives motion from which arrows are currently held rather than
+// from key events - the I2C poll only drains one event per cycle, so
+// event-driven motion would be lumpy.
+bool picocalc_mouse_step(uint8_t *buttons, int8_t *dx, int8_t *dy);
+
 #ifdef __cplusplus
 }
 #endif
