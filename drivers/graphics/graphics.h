@@ -10,6 +10,9 @@ extern "C" {
 #ifdef TFT
 #include "st7789.h"
 #endif
+#ifdef PICOCALC
+#include "picocalc_lcd.h"
+#endif
 #ifdef HDMI
 #include "hdmi.h"
 #endif

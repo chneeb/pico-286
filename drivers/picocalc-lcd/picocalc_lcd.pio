@@ -1,0 +1,66 @@
+;
+; Clocked serial TX for the PicoCalc's ILI9488/ST7365P panel.
+;
+; Derived from the Pico SDK st7789_lcd example (BSD-3-Clause, (c) 2020
+; Raspberry Pi (Trading) Ltd) as used by drivers/st7789/st7789.pio.
+;
+; Unlike the ST7789 driver this one is used with an autopull threshold of 32
+; when streaming pixels: the panel is driven in 18-bit mode (0x3A = 0x66), so
+; pixel data is a plain byte stream of R,G,B triples with no natural 16-bit
+; unit to align to. Streaming whole words keeps the TX FIFO fed with one DMA
+; transfer per four bytes instead of one per byte.
+;
+; Data on OUT pin 0, clock on side-set pin 0. Two cycles per bit, so the
+; panel clock is sys_clk / (2 * clkdiv).
+
+.program pcalc_lcd
+.side_set 1
+
+.wrap_target
+    out pins, 1   side 0 ; stall here if no data (clock low)
+    nop           side 1
+.wrap
+
+% c-sdk {
+
+static inline void pcalc_lcd_program_init(PIO pio, uint sm, uint offset, uint data_pin, uint clk_pin, float clk_div) {
+    pio_gpio_init(pio, data_pin);
+    pio_gpio_init(pio, clk_pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, data_pin, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, clk_pin, 1, true);
+    pio_sm_config c = pcalc_lcd_program_get_default_config(offset);
+    sm_config_set_sideset_pins(&c, clk_pin);
+    sm_config_set_out_pins(&c, data_pin, 1);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+    sm_config_set_clkdiv(&c, clk_div);
+    // Shift left => MSB first. Threshold 8 to start (command mode).
+    sm_config_set_out_shift(&c, false, true, 8);
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+// 8 while sending commands/parameters, 32 while streaming pixel words.
+static inline void pcalc_lcd_set_pull_threshold(PIO pio, uint sm, uint bits) {
+    uint32_t shiftctrl = pio->sm[sm].shiftctrl;
+    shiftctrl &= ~PIO_SM0_SHIFTCTRL_PULL_THRESH_BITS;
+    shiftctrl |= (bits & 0x1fu) << PIO_SM0_SHIFTCTRL_PULL_THRESH_LSB;
+    pio->sm[sm].shiftctrl = shiftctrl;
+}
+
+// We shift MSB-first out of a 32-bit OSR, so an 8-bit datum has to be
+// left-justified. Writing the byte explicitly shifted avoids depending on the
+// bus fabric's narrow-store replication behaviour.
+static inline void pcalc_lcd_put8(PIO pio, uint sm, uint8_t x) {
+    while (pio_sm_is_tx_fifo_full(pio, sm))
+        ;
+    pio->txf[sm] = (uint32_t) x << 24;
+}
+
+// SM is done when it stalls on an empty FIFO
+static inline void pcalc_lcd_wait_idle(PIO pio, uint sm) {
+    uint32_t sm_stall_mask = 1u << (sm + PIO_FDEBUG_TXSTALL_LSB);
+    pio->fdebug = sm_stall_mask;
+    while (!(pio->fdebug & sm_stall_mask))
+        ;
+}
+%}

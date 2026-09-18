@@ -194,6 +194,87 @@ The emulator has a default GPIO pin configuration for its peripherals on the Ras
 | **I2S Audio**   | CLOCK: 17, PCM: 22              |                                     |
 | **PWM Audio**   | Beeper: 28, L: 26, R: 27        |                                     |
 
+### 📟 ClockworkPi PicoCalc
+
+The PicoCalc is supported as a board variant (`-DENABLE_PICOCALC=ON`), which
+selects its own display and keyboard drivers and fixes the whole pinout. It
+requires an RP2350 (Pico 2).
+
+| Peripheral       | GPIO Pin(s)                                  | Notes                                             |
+|------------------|----------------------------------------------|---------------------------------------------------|
+| **Display**      | CLK: 10, DATA: 11, CS: 13, DC: 14, RST: 15   | ILI9488/ST7365P 320x320, 18bpp, PIO SPI           |
+| **Keyboard**     | SDA: 6, SCL: 7                               | I2C1, addr 0x1F — also owns both backlights       |
+| **SD Card**      | CS: 17, SCK: 18, MOSI: 19, MISO: 16          | SPI0                                              |
+| **PSRAM**        | CS: 20, SCK: 21, MOSI: 2, MISO: 3            | On-board chip, driven by the PIO PSRAM driver     |
+| **PWM Audio**    | Beeper: 28, L: 26, R: 27                     | Matches the stock pinout                          |
+
+Notes and limitations:
+
+- **No mouse and no gamepad.** The PS/2 mouse (GP14/15) and NES pad (GP14/15/16)
+  pins belong to the panel and the SD card here, so both are compiled out.
+- **The backlight is not a GPIO.** It is a register write to the keyboard MCU, so
+  there is no `TFT_LED_PIN`. It is switched on once the panel is initialised.
+- **Text modes.** 80x25 is rendered with the 4x6 font at a true 320x150 — no
+  horizontal decimation and no truncation to 40 columns. 40x25 uses the 8x8 font
+  at 320x200.
+- **640-wide modes** (CGA mode 6, Hercules, EGA 640x200/640x350, VGA 640x480) are
+  decimated 2:1 into the 320x320 panel. They display, but **text in them is
+  effectively illegible** — an 8x14 EGA glyph loses half its columns and half its
+  rows. Prefer text mode wherever an application offers it (e.g. run DOSSHELL
+  with `/TEXT`). This is why `int 10h AH=12h` (Get EGA Info) is deliberately left
+  unimplemented: software that probes for EGA then switches to a 640-wide
+  graphics mode is worse off on this panel than in its text fallback.
+- **Frame rate** is bounded by the panel: 320x200 at three bytes per pixel and a
+  50 MHz panel clock is ~31 ms per frame, i.e. around 30 fps.
+- **Hotkeys.** Ctrl-Alt-Del works as usual. The keypad hotkeys are remapped, since
+  the PicoCalc has no keypad: Ctrl-Alt-F1 toggles EGA/VGA, Ctrl-Alt-F2 and
+  Ctrl-Alt-F3 step the CPU throttle down and up.
+
+#### Disk images on the PicoCalc
+
+`insertdisk()` forces hard-disk geometry to **63 sectors x 16 heads** and int 13h
+is a pure CHS translation with no LBA path, so an image partitioned for any other
+geometry reads the wrong sectors. The usual symptom is the MBR and boot sector
+loading fine (they sit at LBA 0 and 63, which translate identically under most
+geometries) and then `Non-System disk or disk error` when the boot sector's first
+root-directory read lands in the wrong place.
+
+An image must therefore be:
+
+- a multiple of 512 bytes, between 360 KB and 503 MB (max 1023 cylinders)
+- partitioned and formatted for **16 heads / 63 sectors** — both the MBR partition
+  entry CHS fields and the BPB at offsets `0x18`/`0x1A` of the boot sector
+- writable (it is opened `FA_READ | FA_WRITE`)
+
+Many stock images use 8 heads. Converting one only needs the geometry fields
+rewritten — the filesystem itself is LBA-linear and does not move.
+
+#### Tunables
+
+| Option | Default | Notes |
+|---|---|---|
+| `PICOCALC_BRINGUP` | `ON` | Boot colour-bar self-test plus a legible 8x8 debug overlay. **Turn OFF for normal use.** Note this is the *only* diagnostic channel: `printf` on this platform writes to `DEBUG_VRAM`, never to a serial port, so with it OFF a boot failure is a silent black screen. |
+| `PICOCALC_SD_CLK_HZ` | `12500000` | SD bus clock. 12.5 MHz matches tiny_agi on this board; the 30 MHz Murmulator default is not reliable here. |
+| `PSRAM_SM_CLOCK_HZ` | `100000000` | PIO state-machine clock for PSRAM, divisor derived from the system clock. ~100 MHz is the operating point verified by a timing sweep on this PCB; reliability is a sampling-phase problem that fails at both faster *and* slower settings, so do not change it without a bulk read/verify. |
+
+#### Notes for future work
+
+- Quad/QPI PSRAM is **not possible** on this board: only two data lines (MOSI GP2,
+  MISO GP3) are routed, and QPI needs SIO0-3. Single-bit SPI is the ceiling, which
+  puts a byte access at 40 bits — ~0.8 us before overhead.
+- The panel also accepts 16-bit pixel format (`0x3A` = `0x65`), which would cut
+  panel traffic by a third. The driver currently uses 18-bit (3 bytes/pixel).
+- `drivers/st7789` predates the planar `VIDEORAM` rework (commit `0e23cc8`) and
+  still uses byte-packed indexing; it is **not** a valid reference for new display
+  drivers. Use `drivers/hdmi` or `drivers/vga-nextgen`, which track the current
+  layout.
+
+```bash
+cmake -DCMAKE_BUILD_TYPE=Release -DPICO_PLATFORM=rp2350 -DPICO_BOARD=pico2 \
+      -DENABLE_PICOCALC=ON -DENABLE_PWM_SOUND=ON -DPICOCALC_BRINGUP=OFF
+make -j$(nproc)
+```
+
 ### ⚙️ Platform-specific Details
 The emulator's resource allocation changes based on the target platform and build options.
 
@@ -286,6 +367,7 @@ The project uses CMake with platform-specific configurations. All builds require
 *   `ENABLE_TFT=ON` - TFT display output via ST7789
 *   `ENABLE_VGA=ON` - VGA output
 *   `ENABLE_HDMI=ON` - HDMI output (dynamic frequency: 504MHz for Pico2, 378MHz for others)
+*   `ENABLE_PICOCALC=ON` - ClockworkPi PicoCalc (ILI9488 320x320 + I2C keyboard; RP2350 only, sets CPU to 396MHz)
 
 #### 🔊 Audio Options (Choose exactly one):
 *   `ENABLE_I2S_SOUND=ON` - I2S digital audio output

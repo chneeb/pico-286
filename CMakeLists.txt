@@ -87,6 +87,20 @@ else ()
     option(ENABLE_HDMI "Enable HDMI display output" OFF)
     option(ENABLE_NTSC-TV "Enable NTSC TV output" OFF)
 
+    # ClockworkPi PicoCalc: ILI9488 320x320 panel + I2C keyboard + on-board
+    # PSRAM. Counts as a display option; it also replaces the PS/2 keyboard and
+    # drops the NES pad (its pins collide with the panel and the SD card).
+    option(ENABLE_PICOCALC "Enable ClockworkPi PicoCalc board support" OFF)
+
+    # Bring-up aids: a colour-bar self-test at boot and a legible 8x8 debug
+    # overlay painted across the bottom of the panel. Turn this OFF for a normal
+    # build - the overlay then only appears in the letterbox, in the 4x6 font.
+    option(PICOCALC_BRINGUP "PicoCalc: boot self-test pattern + large debug overlay" ON)
+
+    # SD bus clock. 12.5 MHz is what tiny_agi uses on this board and is the safe
+    # default; raise it if your card and wiring tolerate it.
+    set(PICOCALC_SD_CLK_HZ "12500000" CACHE STRING "PicoCalc SD SPI clock in Hz")
+
     # Audio Options (mutually exclusive)
     option(ENABLE_I2S_SOUND "Enable I2S audio output" OFF)
     option(ENABLE_PWM_SOUND "Enable PWM audio output" OFF)
@@ -120,6 +134,16 @@ else ()
     if (ENABLE_NTSC-TV)
         set(CPU_FREQ_MHZ "315")
         message(STATUS "NTSC TV out enabled - CPU frequency locked to 315 MHz")
+        math(EXPR DISPLAY_COUNT "${DISPLAY_COUNT} + 1")
+    endif ()
+    if (ENABLE_PICOCALC)
+        if (PICO_PLATFORM STREQUAL "rp2040")
+            message(FATAL_ERROR "PicoCalc support requires an RP2350 (Pico 2)")
+        endif ()
+        # The stock 500 MHz is above what the PicoCalc's PSRAM wiring has been
+        # shown to take; 396 MHz is a conservative starting point.
+        set(CPU_FREQ_MHZ "396")
+        message(STATUS "PicoCalc enabled - CPU frequency set to ${CPU_FREQ_MHZ} MHz")
         math(EXPR DISPLAY_COUNT "${DISPLAY_COUNT} + 1")
     endif ()
 
@@ -171,7 +195,9 @@ else ()
     set(BUILD_NAME "${BUILD_NAME}-F${FLASH_FREQ_MHZ}-P${PSRAM_FREQ_MHZ}-${CPU_FREQ_MHZ}MHz")
 
     # Add display type
-    if (ENABLE_TFT)
+    if (ENABLE_PICOCALC)
+        set(BUILD_NAME "${BUILD_NAME}-PICOCALC")
+    elseif (ENABLE_TFT)
         set(BUILD_NAME "${BUILD_NAME}-TFT")
     elseif (ENABLE_NTSC-TV)
         set(BUILD_NAME "${BUILD_NAME}-TV")
@@ -244,15 +270,28 @@ else ()
     # =========================
     # SUBDIRECTORIES
     # =========================
-    add_subdirectory(drivers/ps2)
     add_subdirectory(drivers/fatfs)
     add_subdirectory(drivers/sdcard)
     add_subdirectory(drivers/audio)
     add_subdirectory(drivers/psram)
-    add_subdirectory(drivers/nespad)
+    if (ENABLE_PICOCALC)
+        # ps2 and nespad are mutually exclusive with the PicoCalc: ps2.c defines
+        # keyboard_init(), and the NES pad pins collide with the panel.
+        add_subdirectory(drivers/picocalc-kbd)
+        target_link_libraries(${PROJECT_NAME} PRIVATE picocalc-kbd)
+    else ()
+        add_subdirectory(drivers/ps2)
+        add_subdirectory(drivers/nespad)
+        target_link_libraries(${PROJECT_NAME} PRIVATE ps2 nespad)
+    endif ()
 
     # Display drivers
-    if (ENABLE_TFT)
+    if (ENABLE_PICOCALC)
+        add_subdirectory(drivers/graphics)
+        add_subdirectory(drivers/picocalc-lcd)
+        target_link_libraries(${PROJECT_NAME} PRIVATE picocalc-lcd)
+        message(STATUS "PicoCalc ILI9488 display enabled")
+    elseif (ENABLE_TFT)
         add_subdirectory(drivers/graphics)
         add_subdirectory(drivers/st7789)
         target_link_libraries(${PROJECT_NAME} PRIVATE st7789)
@@ -276,7 +315,7 @@ else ()
     # LIBRARIES
     # =========================
     target_link_libraries(${PROJECT_NAME} PRIVATE
-            ps2 sdcard audio graphics nespad psram
+            sdcard audio graphics psram
             pico_runtime pico_stdlib pico_multicore
             hardware_dma hardware_pio hardware_i2c hardware_exception
             hardware_interp hardware_timer hardware_clocks hardware_pwm hardware_flash
@@ -294,13 +333,17 @@ else ()
             CPU_FREQ_MHZ=${CPU_FREQ_MHZ}
             FLASH_FREQ_MHZ=${FLASH_FREQ_MHZ}
             PSRAM_FREQ_MHZ=${PSRAM_FREQ_MHZ}
-            PICO_FLASH_SIZE_BYTES=16777216
+            # Murmulator boards carry a 16MB chip; the PicoCalc's Pico 2 has 4MB.
+            # Declaring more than is fitted makes anything that reasons about
+            # flash bounds (and the XIP aliasing) wrong.
+            PICO_FLASH_SIZE_BYTES=$<IF:$<BOOL:${ENABLE_PICOCALC}>,4194304,16777216>
 
             # Display type
             $<$<BOOL:${ENABLE_TFT}>:TFT>
             $<$<BOOL:${ENABLE_VGA}>:VGA>
             $<$<BOOL:${ENABLE_HDMI}>:HDMI>
             $<$<BOOL:${ENABLE_NTSC-TV}>:NTSC>
+            $<$<BOOL:${ENABLE_PICOCALC}>:PICOCALC>
 
             # Audio type
             $<$<BOOL:${ENABLE_I2S_SOUND}>:I2S_SOUND>
@@ -309,7 +352,31 @@ else ()
 
             PSRAM
     )
-    if (MURM20)
+    if (ENABLE_PICOCALC)
+        # ClockworkPi PicoCalc mainboard v2.0 pinout.
+        #   GP2/3,20/21 PSRAM (PIO)   GP6/7   keyboard I2C
+        #   GP10-15     ILI9488 panel GP16-19 SD card (SPI0)
+        #   GP26/27     audio PWM
+        # The panel backlight is driven by the keyboard MCU over I2C, not a GPIO,
+        # so there is no TFT_LED_PIN. No PS/2 mouse or NES pad: GP14/15/16 are
+        # taken by the panel and the SD card.
+        target_compile_definitions(${PROJECT_NAME} PRIVATE
+                PICOCALC_LCD_CLK_PIN=10 PICOCALC_LCD_DATA_PIN=11
+                PICOCALC_LCD_CS_PIN=13 PICOCALC_LCD_DC_PIN=14 PICOCALC_LCD_RST_PIN=15
+                PICOCALC_KBD_SDA_PIN=6 PICOCALC_KBD_SCL_PIN=7
+                SDCARD_PIN_SPI0_CS=17 SDCARD_PIN_SPI0_SCK=18 SDCARD_PIN_SPI0_MOSI=19 SDCARD_PIN_SPI0_MISO=16
+                PSRAM_SPINLOCK=1 PSRAM_ASYNC=1 PSRAM_PIN_CS=20 PSRAM_PIN_SCK=21 PSRAM_PIN_MOSI=2 PSRAM_PIN_MISO=3
+                # ~100 MHz SM clock is the verified operating point for this
+                # board's PSRAM wiring; the divisor follows the system clock.
+                PSRAM_SM_CLOCK_HZ=100000000
+                PWM_BEEPER=28 PWM_LEFT_CHANNEL=26 PWM_RIGHT_CHANNEL=27
+                CLOCK_PIN=22 PCM_PIN=22
+                # 30 MHz is a Murmulator value. tiny_agi runs the PicoCalc's
+                # card at 12.5 MHz; shapones never exceeds 250 kHz.
+                SDCARD_CLK_FAST_HZ=${PICOCALC_SD_CLK_HZ}
+                PICOCALC_LCD_SELFTEST=$<IF:$<BOOL:${PICOCALC_BRINGUP}>,1,0>
+        )
+    elseif (MURM20)
         target_compile_definitions(${PROJECT_NAME} PRIVATE
                 MURM2=1
                 # Pin configurations

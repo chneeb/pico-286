@@ -50,6 +50,7 @@ SOFTWARE.
 #pragma once
 
 #include "hardware/pio.h"
+#include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/timer.h"
 #include "hardware/dma.h"
@@ -631,11 +632,24 @@ __force_inline static void psram_write_async_fast(psram_spi_inst_t* spi, uint32_
 extern psram_spi_inst_t psram_spi;
 extern bool PSRAM_AVAILABLE;
 static __always_inline bool init_psram() {
-    psram_spi = psram_spi_init_clkdiv(pio1,-1, 2.4f, false);
+#ifdef PSRAM_SM_CLOCK_HZ
+    // Reliability on a PIO-SPI PSRAM is a sampling-phase problem, not a raw
+    // speed one: it fails at both fast and slow ends of a clkdiv sweep. So pin
+    // the state-machine clock to a known-good rate and derive the divisor from
+    // whatever the system clock happens to be, instead of hardcoding a divisor
+    // that only holds at one system clock.
+    const float clkdiv = (float) clock_get_hz(clk_sys) / (float) PSRAM_SM_CLOCK_HZ;
+#else
+    const float clkdiv = 2.4f;
+#endif
+    psram_spi = psram_spi_init_clkdiv(pio1, -1, clkdiv, false);
     psram_write32(&psram_spi, 0x313373, 0xDEADBEEF);
     PSRAM_AVAILABLE = 0xDEADBEEF == psram_read32(&psram_spi, 0x313373);
-    for (uint32_t addr32 = (0ul << 20); addr32 < (8ul << 20); addr32 += 4) {
-        psram_write32(&psram_spi, addr32, 0x00);
+    // Zeroing 8 MB is ~2M SPI transactions. Pointless if nothing answered.
+    if (PSRAM_AVAILABLE) {
+        for (uint32_t addr32 = (0ul << 20); addr32 < (8ul << 20); addr32 += 4) {
+            psram_write32(&psram_spi, addr32, 0x00);
+        }
     }
     return PSRAM_AVAILABLE;
 }

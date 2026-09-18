@@ -23,11 +23,17 @@
 #include "emulator/emulator.h"
 #include "audio.h"
 #include "graphics.h"
-#include "ps2.h"
 #include "ff.h"
-#include "nespad.h"
 #include "emu8950.h"
+#ifdef PICOCALC
+// The PicoCalc has neither a PS/2 port nor a NES pad header: the keyboard is on
+// I2C and GP14/15/16 belong to the panel and the SD card.
+#include "picocalc_kbd.h"
+#else
+#include "ps2.h"
+#include "nespad.h"
 #include "ps2_mouse.h"
+#endif
 
 #if HARDWARE_SOUND
 #include "74hc595/74hc595.h"
@@ -206,8 +212,87 @@ INLINE void _putchar(char character) {
     }
 }
 
+// PSRAM bulk-verify result, carried into the recurring perf line so it does
+// not scroll off the 10-line debug overlay.
+static uint32_t psram_errors = 0, psram_kbs = 0;
+
 volatile int16_t last_sb_sample = 0;
 volatile bool ask_to_blast = false;
+
+// Timing state for core1_pump(). File-static rather than loop locals because
+// the display driver calls the pump from inside a frame push.
+static uint64_t last_timer_tick = 0;
+static uint64_t last_sound_tick = 0;
+static uint64_t last_dss_tick = 0;
+static uint64_t last_sb_tick = 0;
+static int16_t last_dss_sample = 0;
+
+/* Timer interrupt + audio generation.
+ *
+ * Pushing a frame to a SPI panel takes far longer than the audio sample
+ * period - on the PicoCalc a full 320x200 frame is ~31 ms of 18-bit pixel
+ * data against a 22.6 us sample period - so this cannot only run once per
+ * pass of the core1 loop. The display driver calls it via lcd_yield() while
+ * it waits on DMA, which keeps sound and the PIT alive during the push. */
+static void __not_in_flash_func(core1_pump)(void) {
+    const uint64_t tick = time_us_64();
+
+#ifdef PICOCALC
+    // CGA status register (0x3DA). The BIOS teletype waits for a FULL low->high
+    // transition of bit 0 (horizontal retrace) before every single character it
+    // writes - the classic snow-avoidance loop at F000:F434. Updating this once
+    // per frame, as the TFT path does, therefore limits the BIOS to one
+    // character per frame: ~55 ms each, minutes for a screen of text.
+    // Model the real CGA rates instead: bit 0 at the ~15.7 kHz line rate
+    // (64 us period, ~25% retrace), bit 3 at the ~60 Hz vertical retrace.
+    // Masks rather than modulo - this runs on every pump call.
+    const uint32_t t32 = (uint32_t) tick;
+    port3DA = ((t32 & 63) >= 48 ? 1u : 0u) | ((t32 & 16383) >= 15000 ? 8u : 0u);
+#endif
+
+    if (tick >= last_timer_tick + timer_period) {
+        doirq(0);
+        last_timer_tick = tick;
+    }
+
+    // Disney Sound Source frequency ~7kHz
+    if (tick > last_dss_tick + (1000000 / 7000)) {
+        last_dss_sample = dss_sample();
+        last_dss_tick = tick;
+    }
+
+#if !PICO_RP2040
+    // Sound Blaster sampling
+    if (tick > last_sb_tick + timeconst) {
+        if (butter_psram_size || PSRAM_AVAILABLE)
+            last_sb_sample = blaster_sample();
+        else
+            ask_to_blast = true; // protect swap from using from second core
+        last_sb_tick = tick;
+    }
+#endif
+
+    // Audio output at configured sample rate
+    if (tick > last_sound_tick + (1000000 / SOUND_FREQUENCY)) {
+        int16_t samples[2];
+        get_sound_sample(last_dss_sample + last_sb_sample, samples);
+
+#if I2S_SOUND
+        i2s_dma_write(&i2s_config, samples);
+#elif PWM_SOUND
+        pwm_set_gpio_level(PWM_LEFT_CHANNEL, (uint16_t)((int32_t)samples[0] + 0x8000L) >> 4);
+        pwm_set_gpio_level(PWM_RIGHT_CHANNEL, (uint16_t)((int32_t)samples[1] + 0x8000L) >> 4);
+#endif
+        last_sound_tick = tick;
+    }
+}
+
+#ifdef PICOCALC
+// Overrides the weak stub in drivers/picocalc-lcd.
+void __not_in_flash_func(lcd_yield)(void) {
+    core1_pump();
+}
+#endif
 
 /* Renderer loop on Pico's second core */
 void __time_critical_func() second_core(void) {
@@ -262,60 +347,30 @@ void __time_critical_func() second_core(void) {
     pwm_init(pwm_gpio_to_slice_num(PCM_PIN), &pwm, true);
 #endif
 
+#ifdef PICOCALC
+    // Everything core1_pump() touches now exists (the OPL instance above in
+    // particular), so the display driver may pump audio while it waits on the
+    // panel. Doing this any earlier faults on a NULL emu8950_opl.
+    picocalc_lcd_enable_yield();
+#endif
+
     // Timing variables
     uint64_t tick = time_us_64();
-    uint64_t last_timer_tick = tick;
+    last_timer_tick = tick;
+    last_sound_tick = tick;
     uint64_t last_cursor_blink = tick;
-    uint64_t last_sound_tick = tick;
     uint64_t last_frame_tick = tick;
-    uint64_t last_dss_tick = 0;
-    uint64_t last_sb_tick = 0;
-
-    int16_t last_dss_sample = 0;
 
     // Main render loop
     while (true) {
-        // Timer interrupt handling
-        if (tick >= last_timer_tick + timer_period) {
-            doirq(0);
-            last_timer_tick = tick;
-        }
+        // Timer interrupt and audio. Also called from inside the display
+        // driver while it blocks on the panel - see core1_pump().
+        core1_pump();
 
         // Cursor blink handling (333ms intervals)
         if (tick >= last_cursor_blink + 333333) {
             cursor_blink_state ^= 1;
             last_cursor_blink = tick;
-        }
-
-        // Dinse Sound Source frequency ~7kHz
-        if (tick > last_dss_tick + (1000000 / 7000)) {
-            last_dss_sample = dss_sample();
-            last_dss_tick = tick;
-        }
-
-#if !PICO_RP2040
-        // Sound Blaster sampling
-        if (tick > last_sb_tick + timeconst) {
-            if (butter_psram_size || PSRAM_AVAILABLE)
-                last_sb_sample = blaster_sample();
-            else
-                ask_to_blast = true; // protect swap from using from seconf core
-            last_sb_tick = tick;
-        }
-#endif
-
-        // Audio output at configured sample rate
-        if (tick > last_sound_tick + (1000000 / SOUND_FREQUENCY)) {
-            int16_t samples[2];
-            get_sound_sample(last_dss_sample + last_sb_sample, samples);
-
-#if I2S_SOUND
-            i2s_dma_write(&i2s_config, samples);
-#elif PWM_SOUND
-            pwm_set_gpio_level(PWM_LEFT_CHANNEL, (uint16_t)((int32_t)samples[0] + 0x8000L) >> 4);
-            pwm_set_gpio_level(PWM_RIGHT_CHANNEL, (uint16_t)((int32_t)samples[1] + 0x8000L) >> 4);
-#endif
-            last_sound_tick = tick;
         }
 
         // Video frame rendering (~60Hz)
@@ -380,12 +435,20 @@ void __time_critical_func() second_core(void) {
                 graphics_set_mode(videomode);
                 old_video_mode = videomode;
             }
-#if defined(TFT)
+#if defined(TFT) || defined(PICOCALC)
             refresh_lcd();
+#ifndef PICOCALC
+            // TFT has the same one-character-per-frame problem; left as-is
+            // because that board is not available to test on.
             port3DA = 8;
             port3DA |= 1;
 #endif
-            last_frame_tick = tick;
+#endif
+            // Take a fresh timestamp: refresh_lcd() can easily overrun the
+            // 16.6 ms budget on a SPI panel, and using the stale pre-render
+            // tick here makes the next iteration re-enter immediately, pinning
+            // core1 at 100% redraw forever.
+            last_frame_tick = time_us_64();
         }
         tick = time_us_64();
         tight_loop_contents();
@@ -710,6 +773,9 @@ int main(void) {
         while (1);
     }
 
+#ifdef PICOCALC
+    load_config_286();
+#else
     nespad_begin(NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
     sleep_ms(5);
     nespad_read();
@@ -719,16 +785,24 @@ int main(void) {
     } else {
         load_config_286();
     }
+#endif
 
     // Initialize PSRAM
     rp2350a = (*((io_ro_32*)(SYSINFO_BASE + SYSINFO_PACKAGE_SEL_OFFSET)) & 1);
-    int gp;
+    int gp = -1;
+#ifdef PICOCALC
+    // The PicoCalc has no QMI-attached PSRAM, and probing for it would hand
+    // GP19 - the SD card's MOSI - to XIP_CS1. Go straight to the PIO driver,
+    // which talks to the board's own chip on GP2/3/20/21.
+    butter_psram_size = 0;
+#else
 #ifdef MURM2
     gp = rp2350a ?  8 : 47;
 #else
     gp = rp2350a ? 19 : 47;
 #endif
     psram_init(gp);
+#endif
     if (!butter_psram_size) {
         if (init_psram() ) {
             write86 = write86_mp;
@@ -755,20 +829,63 @@ int main(void) {
         readdw86 = readdw86_ob;
     }
 
+#ifdef PICOCALC
+    // Verify PSRAM properly before trusting it. init_psram()'s own check is a
+    // single 32-bit round-trip at one address, which is far too weak to catch
+    // marginal sampling timing - both shapones and freesci-archive record that
+    // a short round-trip passes on configurations that then corrupt in bulk.
+    // This matters here because we run at 396 MHz, and freesci found PIO PSRAM
+    // on this same PCB FAILS at 252 MHz even with a compensating divisor.
+    if (PSRAM_AVAILABLE) {
+        const uint32_t BLOCKS = 64, BLOCK_WORDS = 1024; // 64 x 4 KB spread over 8 MB
+        const uint32_t stride = (8ul << 20) / BLOCKS;
+        uint32_t errors = 0;
+        const uint64_t t0 = time_us_64();
+        for (uint32_t b = 0; b < BLOCKS; b++) {
+            const uint32_t base = b * stride;
+            for (uint32_t i = 0; i < BLOCK_WORDS; i++) {
+                const uint32_t a = base + i * 4;
+                write32psram(a, a * 2654435761u);
+            }
+        }
+        for (uint32_t b = 0; b < BLOCKS; b++) {
+            const uint32_t base = b * stride;
+            for (uint32_t i = 0; i < BLOCK_WORDS; i++) {
+                const uint32_t a = base + i * 4;
+                if (read32psram(a) != (a * 2654435761u)) errors++;
+            }
+        }
+        const uint64_t dt = time_us_64() - t0;
+        const uint32_t bytes = BLOCKS * BLOCK_WORDS * 4 * 2; // written + read
+        psram_errors = errors;
+        psram_kbs = dt ? (uint32_t) ((uint64_t) bytes * 1000u / dt) : 0;
+    }
+#endif
+
     // Initialize peripherals
     keyboard_init();
 
     // Check for mouse availability
+#ifndef PICOCALC
 #ifndef MURM2
     const uint8_t mouse_available = nespad_state;
     if (mouse_available)
 #endif
         mouse_init();
+#endif
 
     // Initialize semaphore and launch second core
     sem_init(&vga_start_semaphore, 0, 1);
     multicore_launch_core1(second_core);
     sem_release(&vga_start_semaphore);
+
+#ifdef PICOCALC
+    // The panel takes ~0.5 s to reset and run its init sequence on core1. Wait
+    // for it before lighting the backlight, and do it from here so that core0
+    // stays the only user of the keyboard MCU's I2C bus.
+    for (int i = 0; i < 2000 && !picocalc_lcd_ready; i++) sleep_ms(1);
+    picocalc_lcd_set_backlight(0xFF);
+#endif
 
     if (new_cpu_mhz != cpu_mhz) {
         printf("Failed to overclock to %d MHz\n", new_cpu_mhz);
@@ -801,6 +918,51 @@ int main(void) {
     sn76489_reset();
     reset86();
 
+#ifdef PICOCALC
+    // Main emulation loop. The PicoCalc keyboard is polled rather than
+    // interrupt-driven (it is an I2C peripheral, not a PS/2 line), so it has
+    // to be pumped from here; picocalc_kbd_poll() rate-limits itself.
+#if PICOCALC_LCD_SELFTEST
+    uint64_t perf_last = time_us_64();
+    uint32_t perf_calls = 0;
+    uint32_t perf_frames0 = picocalc_lcd_frames;
+#endif
+
+    while (true) {
+        exec86(tormoz);
+#if PICOCALC_LCD_SELFTEST
+        perf_calls++;
+#endif
+        if (delay) sleep_us(delay);
+        picocalc_kbd_poll();
+
+#if PICOCALC_LCD_SELFTEST
+        // Report throughput every 2 s into the debug overlay. exec86() runs
+        // `tormoz` instructions per call, so this is emulated KIPS; on a healthy
+        // build it should be in the thousands, and the frame rate tells us
+        // whether core1's panel pushes are the thing holding core0 back.
+        const uint64_t perf_now = time_us_64();
+        if (perf_now - perf_last >= 2000000) {
+            const uint32_t frames = picocalc_lcd_frames - perf_frames0;
+            const uint64_t instr = (uint64_t) perf_calls * (uint64_t) tormoz;
+            // CS:IP says *where* the emulated CPU is. A stable CS=F000 with a
+            // slowly-advancing IP is the BIOS grinding through something (the
+            // POST memory test walks all 640 KB, and everything above the
+            // 176 KB SRAM window is a PIO-SPI PSRAM transaction per access).
+            printf("%lu KIPS %lu fps %04X:%04X PS %lu/%lu\n",
+                   (unsigned long) (instr / (perf_now - perf_last) * 1000),
+                   (unsigned long) (frames * 1000000ull / (perf_now - perf_last)),
+                   (unsigned) CPU_CS, (unsigned) CPU_IP,
+                   (unsigned long) psram_errors, (unsigned long) psram_kbs);
+            perf_last = perf_now;
+            perf_calls = 0;
+            perf_frames0 = picocalc_lcd_frames;
+        }
+#endif
+        tight_loop_contents();
+    }
+    __unreachable();
+#else
     // Initialize mouse control variables
     nespad_read();
     float mouse_throttle = 3.0f;
@@ -847,4 +1009,5 @@ int main(void) {
         tight_loop_contents();
     }
     __unreachable();
+#endif
 }

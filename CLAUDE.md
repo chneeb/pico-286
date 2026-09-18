@@ -138,7 +138,16 @@ See `README.md` for a more detailed explanation.
 - `psram/` - External PSRAM via SPI
 - `nespad/` - NES gamepad for mouse emulation
 - `hdmi/`, `vga-nextgen/`, `st7789/` - Display outputs
+- `picocalc-lcd/`, `picocalc-kbd/` - ClockworkPi PicoCalc board support (`-DENABLE_PICOCALC=ON`):
+  ILI9488 320x320 panel over PIO SPI at 18bpp, and the I2C keyboard mapped to XT
+  scancodes. See the PicoCalc section of `README.md` for the pinout, the disk-image
+  geometry requirement and the tunables.
 - `audio/` - Audio output drivers
+
+**Note on display drivers:** `VIDEORAM` is a `uint32_t[65536]` holding four plane
+bytes per address (commit `0e23cc8`). `drivers/hdmi` and `drivers/vga-nextgen`
+track that layout; `drivers/st7789` predates it and still does byte-packed
+indexing, so do not use it as a reference for new drivers.
 
 **Driver Architecture**:
 - Each driver has its own CMakeLists.txt and can be conditionally compiled.

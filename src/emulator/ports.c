@@ -5,7 +5,10 @@
 #include <74hc595.h>
 #include <hardware/pwm.h>
 extern int16_t keyboard_send(uint8_t data);
+#ifndef PICOCALC
+// No NES pad header on the PicoCalc - its pins belong to the panel and SD card.
 #include "nespad.h"
+#endif
 #endif
 
 #include <emu8950.h>
@@ -42,7 +45,7 @@ static INLINE void joystick_out() {
 
 static INLINE uint8_t joystick_in() {
     uint8_t data = 0xF0;
-#if PICO_ON_DEVICE
+#if PICO_ON_DEVICE && !defined(PICOCALC)
     nespad_read();
     int8_t axis_x = nespad_state & DPAD_LEFT ? -127 : (nespad_state & DPAD_RIGHT) ? 127 : 0;
     int8_t axis_y = nespad_state & DPAD_UP ? -127 : (nespad_state & DPAD_DOWN) ? 127 : 0;

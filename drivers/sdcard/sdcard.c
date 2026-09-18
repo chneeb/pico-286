@@ -52,7 +52,13 @@
 #define CT_BLOCK       0x08            /* Block addressing */
 
 #define CLK_SLOW	(100 * KHZ)
-#define CLK_FAST	(30 * MHZ)
+// 30 MHz is fine on a Murmulator's short traces but is not a universal value -
+// on the PicoCalc, tiny_agi runs this card at 12.5 MHz and shapones never
+// leaves 250 kHz at all. Overridable per board.
+#ifndef SDCARD_CLK_FAST_HZ
+#define SDCARD_CLK_FAST_HZ (30 * MHZ)
+#endif
+#define CLK_FAST	(SDCARD_CLK_FAST_HZ)
 
 static volatile
 DSTATUS Stat = STA_NOINIT;	/* Physical drive status */
