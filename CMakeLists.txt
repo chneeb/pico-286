@@ -108,8 +108,14 @@ else ()
     # Soak build: hammers the configured PSRAM operating point and reports a
     # running error total. Use before committing to a divisor from the sweep.
     option(PICOCALC_PSRAM_SOAK "PicoCalc: PSRAM soak-test build" OFF)
-    set(PSRAM_FUDGE_VAL "0" CACHE STRING "PSRAM PIO program: 0 = plain, 1 = fudge")
-    set(PSRAM_SM_CLOCK_VAL "100000000" CACHE STRING "PSRAM PIO state-machine clock in Hz")
+    # Device-verified operating point: 198 MHz SM = 99 MHz SPI with the fudge
+    # PIO program, soak-tested clean (0 errors, ~5.0 MB/s) on PicoCalc hardware.
+    # These two are coupled: psram_spi.pio documents the fudge variant as
+    # required above 83 MHz SPI and it is DEAD below that, so lowering the clock
+    # past 166 MHz SM without also setting PSRAM_FUDGE_VAL=0 gives a dead bus.
+    # Use -DPICOCALC_PSRAM_SWEEP=ON to re-derive both for a different board.
+    set(PSRAM_FUDGE_VAL "1" CACHE STRING "PSRAM PIO program: 0 = plain, 1 = fudge (needed above 83MHz SPI)")
+    set(PSRAM_SM_CLOCK_VAL "198000000" CACHE STRING "PSRAM PIO state-machine clock in Hz (SPI rate is half this)")
 
     # Audio Options (mutually exclusive)
     option(ENABLE_I2S_SOUND "Enable I2S audio output" OFF)

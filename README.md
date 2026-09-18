@@ -257,8 +257,8 @@ rewritten — the filesystem itself is LBA-linear and does not move.
 | `PICOCALC_SD_CLK_HZ` | `12500000` | SD bus clock. 12.5 MHz matches tiny_agi on this board; the 30 MHz Murmulator default is not reliable here. |
 | `PICOCALC_PSRAM_SWEEP` | `OFF` | One-shot measuring build. Sweeps PSRAM over (divisor x fudge), prints a table of SPI rate / errors / throughput, then stops — it does not boot the emulator. Use it to pick `PSRAM_SM_CLOCK_VAL` and `PSRAM_FUDGE_VAL` for a board, then rebuild normally. |
 | `PICOCALC_PSRAM_SOAK` | `OFF` | Soak build. Hammers the *configured* operating point and reports a running error total, so a candidate divisor can be checked over minutes and as the board warms, not just for one 256 KB pass. |
-| `PSRAM_FUDGE_VAL` | `0` | PSRAM PIO program: `1` selects the variant with the extra read-sync cycle, which `psram_spi.pio` documents as required for reads above **83 MHz** SPI. It pairs with the clock and is not independently tunable — below 83 MHz the fudge lands wrong and the link is dead, so choose both from a sweep. |
-| `PSRAM_SM_CLOCK_VAL` | `100000000` | PIO state-machine clock for PSRAM, divisor derived from the system clock. ~100 MHz is the operating point verified by a timing sweep on this PCB; reliability is a sampling-phase problem that fails at both faster *and* slower settings, so do not change it without a bulk read/verify. |
+| `PSRAM_FUDGE_VAL` | `1` | PSRAM PIO program: `1` selects the variant with the extra read-sync cycle, which `psram_spi.pio` documents as required for reads above **83 MHz** SPI. It pairs with the clock and is **not independently tunable** — below 83 MHz the fudge lands wrong and the bus is dead, so lowering `PSRAM_SM_CLOCK_VAL` below 166000000 requires setting this to `0` as well. |
+| `PSRAM_SM_CLOCK_VAL` | `198000000` | PIO state-machine clock for PSRAM; the SPI rate is half this (99 MHz), and the divisor is derived from the system clock so the rate holds if `CPU_FREQ_MHZ` changes. Device-verified: soak-tested clean at 0 errors and ~5.0 MB/s, which is 1.9x the 50 MHz point. Reliability is a sampling-phase problem that fails at both faster *and* slower settings, so re-derive it with `PICOCALC_PSRAM_SWEEP` rather than guessing, and confirm with `PICOCALC_PSRAM_SOAK` before trusting it. |
 
 #### Verifying a build option actually applied
 
@@ -276,7 +276,22 @@ grep -o "PSRAM_SM_CLOCK_HZ=[0-9]*" build.ninja
 
 - Quad/QPI PSRAM is **not possible** on this board: only two data lines (MOSI GP2,
   MISO GP3) are routed, and QPI needs SIO0-3. Single-bit SPI is the ceiling, which
-  puts a byte access at 40 bits — ~0.8 us before overhead.
+  puts a byte access at 40 bits.
+- **Measured PSRAM operating points on PicoCalc hardware** (396 MHz system clock,
+  random 32-bit accesses — not bulk DMA, so these are lower than a sequential
+  figure):
+
+  | SPI | plain | fudge |
+  |---|---|---|
+  | 49 MHz | works, 2674 KB/s | dead |
+  | 66 MHz | works | dead |
+  | 79 MHz | works | dead |
+  | **99 MHz** | works, 5012 KB/s | **works, 4997 KB/s — soaked clean, the default** |
+
+  The dead column below 83 MHz is the documented behaviour of the fudge program,
+  not a fault. For comparison, shapones runs this PCB at 50 MHz SPI and
+  freesci-archive at 66 MHz, both below the 83 MHz threshold — so both appear to
+  have settled in a local optimum without crossing into the fudge program's range.
 - The panel also accepts 16-bit pixel format (`0x3A` = `0x65`), which would cut
   panel traffic by a third. The driver currently uses 18-bit (3 bytes/pixel).
 - `drivers/st7789` predates the planar `VIDEORAM` rework (commit `0e23cc8`) and
