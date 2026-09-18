@@ -263,8 +263,14 @@ static void handle_event(const uint8_t key, const uint8_t state) {
             down ? send_make(XT_ALT) : send_break(XT_ALT);
             return;
         case KEY_MOD_SYM:
-            // Sym is already folded into the character by the firmware; there
-            // is no PC equivalent, so swallow it.
+            // Dead code on PicoCalc hardware: KEY_MOD_SYM exists in the
+            // ClockworkPi firmware headers but the key matrix in
+            // picocalc_keyboard/keyboard.ino assigns no physical key to it -
+            // Alt, Ctrl and the two Shifts are the only modifiers, and every
+            // symbol is a plain or Shift combination. Kept because it costs
+            // nothing and other keyboard revisions may differ; if a board does
+            // send it, the character is already folded in and there is no PC
+            // equivalent, so swallowing it is right either way.
             return;
         default:
             break;

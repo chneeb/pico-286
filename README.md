@@ -230,6 +230,46 @@ Notes and limitations:
   the PicoCalc has no keypad: Ctrl-Alt-F1 toggles EGA/VGA, Ctrl-Alt-F2 and
   Ctrl-Alt-F3 step the CPU throttle down and up.
 
+#### Keyboard
+
+The keyboard MCU reports mostly-ASCII key codes with a press/hold/release state,
+which the driver maps to XT set 1 make/break codes. Two details of the hardware
+shape that mapping:
+
+- **There is no Sym key.** `KEY_MOD_SYM` exists in the ClockworkPi firmware
+  headers but is not assigned to any physical key — the matrix
+  (`PicoCalc/Code/picocalc_keyboard/keyboard.ino`) has only Alt, Ctrl and the two
+  Shifts. Every symbol is a plain or Shift combination, and the full ASCII set is
+  reachable. `\` is a dedicated key (Shift gives `|`), `:` is Shift+`;`,
+  `>` is Shift+`.`.
+- **Shift is reported *and* folded into the character.** Holding Shift produces a
+  Shift event *and* the shifted ASCII, so the driver passes the real Shift
+  through. CapsLock instead produces uppercase ASCII with no Shift event, so
+  there the driver synthesises a Shift make/break around the key — but only when
+  no physical Shift is down, since emitting a Shift break while the user is
+  holding one desyncs the emulated keyboard for the rest of the session.
+
+The PicoCalc has no keypad, so the emulator's keypad hotkeys are remapped:
+Ctrl-Alt-F1 toggles EGA/VGA, Ctrl-Alt-F2 / Ctrl-Alt-F3 step the CPU throttle.
+Ctrl-Alt-Del works normally. F11 and F12 are not present on the matrix.
+
+**Arrow keys at the `C:\>` prompt behave oddly, and that is correct.** Before
+DOSKEY (DOS 5.0) COMMAND.COM has no command history: Left is a destructive
+backspace, Right copies one character from the previous command, and Up/Down are
+unused. The arrows are being delivered correctly — test them somewhere they do
+something, e.g. `DOSSHELL` in text mode.
+
+#### Device-verified status
+
+| Subsystem | Status |
+|---|---|
+| Display, all text and graphics modes | working |
+| SD card + FAT, MS-DOS 4.0 boot | working |
+| PSRAM | working, soak-tested (0 errors, ~5.0 MB/s) |
+| Keyboard — letters, Shift, arrows, Ctrl-Alt-Del | working |
+| Keyboard — CapsLock (synthesised-Shift path) | **not yet verified** |
+| Audio (PWM) | **not yet verified** |
+
 #### Disk images on the PicoCalc
 
 `insertdisk()` forces hard-disk geometry to **63 sectors x 16 heads** and int 13h
