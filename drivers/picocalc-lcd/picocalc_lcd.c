@@ -10,9 +10,10 @@
 // byte. (drivers/st7789 predates that change and still does byte-packed
 // indexing, so it is NOT a valid reference.)
 //
-// The panel runs in 18-bit mode (0x3A = 0x66), i.e. three bytes per pixel with
-// the six significant bits in the high end of each byte. There is no RGB565
-// option over SPI on this controller.
+// The panel runs in 16-bit mode (0x3A = 0x65): RGB565, two bytes per pixel,
+// high byte first. The controller also offers 18-bit (0x66, three bytes), but
+// 16-bit is a third less traffic for colour depth that is invisible here - the
+// emulated modes use at most a 256-entry palette on a 320x320 panel.
 //
 // Rendering is two-stage per scanline: unpack the mode into a line of palette
 // indices, then expand indices to packed RGB words and DMA them out. 640-wide
@@ -39,8 +40,11 @@ static uint sm_lcd = 0;
 static uint lcd_dma_chan = 0;
 static uint pio_offset = 0;
 
-// Palette entries are 0x00RRGGBB; the panel takes the top six bits of each byte.
-static uint32_t palette[256];
+// Palette entries are RGB565, ready to shift straight out to the panel.
+static uint16_t palette[256];
+
+// 0x00RRGGBB -> RGB565.
+#define RGB565(c) ((uint16_t) ((((c) >> 8) & 0xF800) | (((c) >> 5) & 0x07E0) | (((c) >> 3) & 0x001F)))
 
 uint8_t *text_buffer = NULL;
 static uint8_t *graphics_framebuffer = NULL;
@@ -63,8 +67,9 @@ volatile uint32_t picocalc_lcd_frames = 0;
 // native width before being decimated on the way into the word buffer.
 static uint8_t __aligned(4) idx_line[640];
 // Two packed-pixel line buffers: one is being filled while the other DMAs.
-// 320 px * 3 bytes = 960 bytes = 240 words exactly, so lines never straddle.
-static uint32_t __aligned(4) word_line[2][240];
+// 320 px * 2 bytes = 640 bytes = 160 words exactly, so lines never straddle.
+#define LINE_WORDS (PICOCALC_LCD_WIDTH * 2 / 4)
+static uint32_t __aligned(4) word_line[2][LINE_WORDS];
 
 // Called while blocked on the panel DMA. A full frame takes ~31 ms at 50 MHz,
 // which is far longer than the 22.6 us audio sample period, so core1's sound
@@ -118,7 +123,7 @@ static const uint8_t init_seq[] = {
     2, 0, 0xC1, 0x41, // Power Control 2
     4, 0, 0xC5, 0x00, 0x12, 0x80, // VCOM Control
     2, 0, 0x36, 0x48, // MADCTL: MX | BGR
-    2, 0, 0x3A, 0x66, // Pixel format: 18 bit, the only SPI option
+    2, 0, 0x3A, 0x65, // Pixel format: 16 bit RGB565, 2 bytes/pixel
     2, 0, 0xB0, 0x00, // Interface Mode Control
     2, 0, 0xB1, 0xA0, // Frame Rate Control
     1, 0, 0x21, // Inversion on
@@ -176,24 +181,18 @@ static inline void send_words(const uint32_t *words, const uint num_words) {
     dma_channel_set_trans_count(lcd_dma_chan, num_words, true);
 }
 
-// ─── Index line -> packed RGB words ────────────────────────────────────────
+// ─── Index line -> packed RGB565 words ─────────────────────────────────────
 //
-// Four pixels (12 bytes) pack into exactly three words. Bytes leave the PIO
-// MSB-first, so the first byte of a word sits in bits 31:24.
-static inline void pack4(uint32_t *out,
-                         const uint32_t c0, const uint32_t c1,
-                         const uint32_t c2, const uint32_t c3) {
-    out[0] = (c0 << 8) | (c1 >> 16);
-    out[1] = (c1 << 16) | (c2 >> 8);
-    out[2] = (c2 << 24) | c3;
+// Two pixels (4 bytes) per word. The PIO shifts MSB-first from bit 31, and the
+// panel wants each pixel high byte first, so the left pixel occupies 31:16.
+static inline void pack2(uint32_t *out, const uint16_t c0, const uint16_t c1) {
+    *out = ((uint32_t) c0 << 16) | (uint32_t) c1;
 }
 
 static void pack_line_320(const uint8_t *idx, uint32_t *out) {
-    for (int i = 0; i < 320 / 4; i++) {
-        pack4(out,
-              palette[idx[0]], palette[idx[1]], palette[idx[2]], palette[idx[3]]);
-        idx += 4;
-        out += 3;
+    for (int i = 0; i < PICOCALC_LCD_WIDTH / 2; i++) {
+        pack2(out++, palette[idx[0]], palette[idx[1]]);
+        idx += 2;
     }
 }
 
@@ -201,14 +200,11 @@ static void pack_line_320(const uint8_t *idx, uint32_t *out) {
 // keeps thin bright strokes alive - dropping every odd column outright makes
 // 640-wide mono text and hairlines disappear.
 static void pack_line_640(const uint8_t *idx, uint32_t *out) {
-    for (int i = 0; i < 320 / 4; i++) {
+    for (int i = 0; i < PICOCALC_LCD_WIDTH / 2; i++) {
         const uint8_t a0 = idx[0] ? idx[0] : idx[1];
         const uint8_t a1 = idx[2] ? idx[2] : idx[3];
-        const uint8_t a2 = idx[4] ? idx[4] : idx[5];
-        const uint8_t a3 = idx[6] ? idx[6] : idx[7];
-        pack4(out, palette[a0], palette[a1], palette[a2], palette[a3]);
-        idx += 8;
-        out += 3;
+        pack2(out++, palette[a0], palette[a1]);
+        idx += 4;
     }
 }
 
@@ -540,7 +536,7 @@ void __time_critical_func(refresh_lcd)(void) {
         else
             pack_line_320(idx_line, word_line[cur]);
 
-        send_words(word_line[cur], 240);
+        send_words(word_line[cur], LINE_WORDS);
         cur ^= 1;
     }
 
@@ -555,16 +551,16 @@ void __time_critical_func(refresh_lcd)(void) {
     {
         const uint overlay_y = PICOCALC_LCD_HEIGHT - DEBUG_OVERLAY8_ROWS;
         // Blue background so it is unmistakably a text panel and not noise.
-        palette[1] = 0x000080;
-        palette[0x0a] = 0x40FF40;
-        palette[0x0c] = 0xFF6060;
-        palette[0x0f] = 0xFFFFFF;
+        palette[1] = RGB565(0x000080u);
+        palette[0x0a] = RGB565(0x40FF40u);
+        palette[0x0c] = RGB565(0xFF6060u);
+        palette[0x0f] = RGB565(0xFFFFFFu);
         lcd_set_window(0, overlay_y, PICOCALC_LCD_WIDTH, DEBUG_OVERLAY8_ROWS);
         start_pixels();
         for (uint row = 0; row < DEBUG_OVERLAY8_ROWS; row++) {
             render_debug_line8(row, idx_line);
             pack_line_320(idx_line, word_line[cur]);
-            send_words(word_line[cur], 240);
+            send_words(word_line[cur], LINE_WORDS);
             cur ^= 1;
         }
         while (dma_channel_is_busy(lcd_dma_chan)) {
@@ -589,7 +585,7 @@ void graphics_set_mode(const enum graphics_mode_t mode) {
         lcd_set_window(0, 0, PICOCALC_LCD_WIDTH, g.y_off);
         start_pixels();
         for (uint row = 0; row < g.y_off; row++)
-            send_words(word_line[0], 240);
+            send_words(word_line[0], LINE_WORDS);
         while (dma_channel_is_busy(lcd_dma_chan)) {
         }
         stop_pixels();
@@ -599,7 +595,7 @@ void graphics_set_mode(const enum graphics_mode_t mode) {
         lcd_set_window(0, g.y_off + g.out_h, PICOCALC_LCD_WIDTH, bottom);
         start_pixels();
         for (uint row = 0; row < bottom; row++)
-            send_words(word_line[0], 240);
+            send_words(word_line[0], LINE_WORDS);
         while (dma_channel_is_busy(lcd_dma_chan)) {
         }
         stop_pixels();
@@ -607,7 +603,7 @@ void graphics_set_mode(const enum graphics_mode_t mode) {
 }
 
 void graphics_set_palette(const uint8_t index, const uint32_t color888) {
-    palette[index] = color888 & 0xFFFFFF;
+    palette[index] = RGB565(color888);
 }
 
 void graphics_set_buffer(uint8_t *buffer, const uint16_t width, const uint16_t height) {
@@ -690,13 +686,13 @@ void graphics_init(void) {
         for (int i = 0; i < 320; i++)
             idx_line[i] = i * 8 / 320; // 8 bars of 40 px
         // Borrow the palette for the pattern, then clear it again below.
-        for (int i = 0; i < 8; i++) palette[i] = bars[i];
+        for (int i = 0; i < 8; i++) palette[i] = RGB565(bars[i]);
 
         lcd_set_window(0, 0, PICOCALC_LCD_WIDTH, PICOCALC_LCD_HEIGHT);
         start_pixels();
         pack_line_320(idx_line, word_line[0]);
         for (int row = 0; row < PICOCALC_LCD_HEIGHT; row++)
-            send_words(word_line[0], 240);
+            send_words(word_line[0], LINE_WORDS);
         while (dma_channel_is_busy(lcd_dma_chan)) {
         }
         stop_pixels();
@@ -710,7 +706,7 @@ void graphics_init(void) {
     lcd_set_window(0, 0, PICOCALC_LCD_WIDTH, PICOCALC_LCD_HEIGHT);
     start_pixels();
     for (int row = 0; row < PICOCALC_LCD_HEIGHT; row++)
-        send_words(word_line[0], 240);
+        send_words(word_line[0], LINE_WORDS);
     while (dma_channel_is_busy(lcd_dma_chan)) {
     }
     stop_pixels();

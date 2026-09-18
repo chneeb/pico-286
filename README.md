@@ -202,7 +202,7 @@ requires an RP2350 (Pico 2).
 
 | Peripheral       | GPIO Pin(s)                                  | Notes                                             |
 |------------------|----------------------------------------------|---------------------------------------------------|
-| **Display**      | CLK: 10, DATA: 11, CS: 13, DC: 14, RST: 15   | ILI9488/ST7365P 320x320, 18bpp, PIO SPI           |
+| **Display**      | CLK: 10, DATA: 11, CS: 13, DC: 14, RST: 15   | ILI9488/ST7365P 320x320, RGB565, PIO SPI          |
 | **Keyboard**     | SDA: 6, SCL: 7                               | I2C1, addr 0x1F — also owns both backlights       |
 | **SD Card**      | CS: 17, SCK: 18, MOSI: 19, MISO: 16          | SPI0                                              |
 | **PSRAM**        | CS: 20, SCK: 21, MOSI: 2, MISO: 3            | On-board chip, driven by the PIO PSRAM driver     |
@@ -224,8 +224,10 @@ Notes and limitations:
   with `/TEXT`). This is why `int 10h AH=12h` (Get EGA Info) is deliberately left
   unimplemented: software that probes for EGA then switches to a 640-wide
   graphics mode is worse off on this panel than in its text fallback.
-- **Frame rate** is bounded by the panel: 320x200 at three bytes per pixel and a
-  50 MHz panel clock is ~31 ms per frame, i.e. around 30 fps.
+- **Frame rate** is bounded by the panel. The driver uses 16-bit RGB565
+  (`0x3A` = `0x65`), two bytes per pixel, so a 320x200 frame is 128 KB — a third
+  less than the controller's 18-bit mode would cost. The colour loss is invisible
+  here: the emulated modes use at most a 256-entry palette.
 - **Hotkeys.** Ctrl-Alt-Del works as usual. The keypad hotkeys are remapped, since
   the PicoCalc has no keypad: Ctrl-Alt-F1 toggles EGA/VGA, Ctrl-Alt-F2 and
   Ctrl-Alt-F3 step the CPU throttle down and up.
@@ -332,8 +334,6 @@ grep -o "PSRAM_SM_CLOCK_HZ=[0-9]*" build.ninja
   not a fault. For comparison, shapones runs this PCB at 50 MHz SPI and
   freesci-archive at 66 MHz, both below the 83 MHz threshold — so both appear to
   have settled in a local optimum without crossing into the fudge program's range.
-- The panel also accepts 16-bit pixel format (`0x3A` = `0x65`), which would cut
-  panel traffic by a third. The driver currently uses 18-bit (3 bytes/pixel).
 - `drivers/st7789` predates the planar `VIDEORAM` rework (commit `0e23cc8`) and
   still uses byte-packed indexing; it is **not** a valid reference for new display
   drivers. Use `drivers/hdmi` or `drivers/vga-nextgen`, which track the current
