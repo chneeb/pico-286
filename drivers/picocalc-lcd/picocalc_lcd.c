@@ -11,7 +11,7 @@
 // indexing, so it is NOT a valid reference.)
 //
 // The panel runs in 16-bit mode (0x3A = 0x65): RGB565, two bytes per pixel,
-// low byte first (see panel565()). The controller also offers 18-bit (0x66, three bytes), but
+// high byte first. The controller also offers 18-bit (0x66, three bytes), but
 // 16-bit is a third less traffic for colour depth that is invisible here - the
 // emulated modes use at most a 256-entry palette on a 320x320 panel.
 //
@@ -46,18 +46,20 @@ static uint16_t palette[256];
 // 0x00RRGGBB -> RGB565.
 #define RGB565(c) ((uint16_t) ((((c) >> 8) & 0xF800) | (((c) >> 5) & 0x07E0) | (((c) >> 3) & 0x001F)))
 
-// This panel latches each 16-bit pixel LOW BYTE FIRST, unlike the 18-bit mode
-// where the first byte sent is the red channel. Determined on hardware: with
-// the bytes the other way round, CGA brown (197,125,0) renders as (230,24,24) -
-// bright red with the green gone - and light grey (197,198,197) as (57,24,49),
-// i.e. everything dark. White survives either way because 0xFFFF is a
-// palindrome, which is why the display stayed readable while every other colour
-// was wrong.
+// Pixel byte order: high byte first, which is what the controller expects and
+// what shapones does on this same panel.
 //
-// Swapping here rather than in the packing loop keeps that loop a straight
-// two-pixels-per-word copy and costs nothing per frame.
+// This was briefly implemented the other way round. The driver had a second bug
+// that put a 24-bit residue ahead of the pixel stream (see start_pixels()),
+// which is 1.5 pixels at two bytes each - a one-pixel offset AND a one-byte
+// misalignment. Swapping the bytes re-aligned the high bytes, where red and
+// most of green live, so the colours looked roughly right and the swap appeared
+// to be correct. It was compensating for the residue, not for the panel. With
+// the residue gone the swap is simply wrong.
+//
+// Kept as a switch only in case a panel revision genuinely differs.
 #ifndef PICOCALC_LCD_PIXEL_SWAP
-#define PICOCALC_LCD_PIXEL_SWAP 1
+#define PICOCALC_LCD_PIXEL_SWAP 0
 #endif
 
 static inline uint16_t panel565(const uint32_t color888) {

@@ -228,13 +228,14 @@ Notes and limitations:
   (`0x3A` = `0x65`), two bytes per pixel, so a 320x200 frame is 128 KB — a third
   less than the controller's 18-bit mode would cost. The colour loss is invisible
   here: the emulated modes use at most a 256-entry palette.
-- **Pixel byte order.** In 16-bit mode this panel latches each pixel **low byte
-  first**, unlike 18-bit mode where the first byte sent is the red channel. The
-  palette is stored pre-swapped (`panel565()`), so the packing loop stays a plain
-  copy; `PICOCALC_LCD_PIXEL_SWAP=0` reverts it if a different panel revision
-  needs the other order. Getting this wrong leaves the geometry perfect and only
-  the colours wrong — CGA brown renders as pure red and light grey goes almost
-  black, while white stays white because `0xFFFF` is a palindrome.
+- **Pixel byte order is high byte first**, as the controller expects and as
+  shapones does on this same panel. It was briefly implemented the other way
+  round, to compensate for a separate bug that put a 24-bit residue ahead of the
+  pixel stream (see `start_pixels()`): 1.5 pixels at two bytes each, so a
+  one-pixel offset *and* a one-byte misalignment. Swapping re-aligned the high
+  bytes — where red and most of green live — so colours looked roughly right and
+  the swap appeared correct. Worth remembering as a case of two bugs masking each
+  other: the symptom improved without the cause having been found.
 - **Hotkeys.** Ctrl-Alt-Del works as usual. The keypad hotkeys are remapped, since
   the PicoCalc has no keypad: Ctrl-Alt-F1 toggles EGA/VGA, Ctrl-Alt-F2 and
   Ctrl-Alt-F3 step the CPU throttle down and up.
