@@ -122,6 +122,11 @@ else ()
     # Soak build: hammers the configured PSRAM operating point and reports a
     # running error total. Use before committing to a divisor from the sweep.
     option(PICOCALC_PSRAM_SOAK "PicoCalc: PSRAM soak-test build" OFF)
+
+    # Keyboard diagnostic build: logs every raw key event and suppresses the
+    # perf counter, so the 10-line overlay is entirely key traffic. Implies the
+    # bring-up overlay, since that is what renders it.
+    option(PICOCALC_KBD_DEBUG "PicoCalc: raw keyboard event logging" OFF)
     # Device-verified operating point: 198 MHz SM = 99 MHz SPI with the fudge
     # PIO program, soak-tested clean (0 errors, ~5.0 MB/s) on PicoCalc hardware.
     # These two are coupled: psram_spi.pio documents the fudge variant as
@@ -230,7 +235,9 @@ else ()
         # Distinct output name: the bring-up and normal builds are otherwise
         # byte-for-byte indistinguishable by filename, and flashing the wrong
         # one looks like the option did nothing.
-        if (PICOCALC_PSRAM_SWEEP)
+        if (PICOCALC_KBD_DEBUG)
+            set(BUILD_NAME "${BUILD_NAME}-KBDDEBUG")
+        elseif (PICOCALC_PSRAM_SWEEP)
             set(BUILD_NAME "${BUILD_NAME}-PSRAMSWEEP")
         elseif (PICOCALC_PSRAM_SOAK)
             set(BUILD_NAME "${BUILD_NAME}-PSRAMSOAK")
@@ -413,12 +420,13 @@ else ()
                 PSRAM_FUDGE=${PSRAM_FUDGE_VAL}
                 $<$<BOOL:${PICOCALC_PSRAM_SWEEP}>:PICOCALC_PSRAM_SWEEP>
                 $<$<BOOL:${PICOCALC_PSRAM_SOAK}>:PICOCALC_PSRAM_SOAK>
+                $<$<BOOL:${PICOCALC_KBD_DEBUG}>:PICOCALC_KBD_DEBUG>
                 PWM_BEEPER=28 PWM_LEFT_CHANNEL=26 PWM_RIGHT_CHANNEL=27
                 CLOCK_PIN=22 PCM_PIN=22
                 # 30 MHz is a Murmulator value. tiny_agi runs the PicoCalc's
                 # card at 12.5 MHz; shapones never exceeds 250 kHz.
                 SDCARD_CLK_FAST_HZ=${PICOCALC_SD_CLK_HZ}
-                PICOCALC_LCD_SELFTEST=$<IF:$<BOOL:${PICOCALC_BRINGUP}>,1,0>
+                PICOCALC_LCD_SELFTEST=$<IF:$<OR:$<BOOL:${PICOCALC_BRINGUP}>,$<BOOL:${PICOCALC_KBD_DEBUG}>>,1,0>
         )
     elseif (MURM20)
         target_compile_definitions(${PROJECT_NAME} PRIVATE

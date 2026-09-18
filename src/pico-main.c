@@ -1019,7 +1019,7 @@ int main(void) {
     // Main emulation loop. The PicoCalc keyboard is polled rather than
     // interrupt-driven (it is an I2C peripheral, not a PS/2 line), so it has
     // to be pumped from here; picocalc_kbd_poll() rate-limits itself.
-#if PICOCALC_LCD_SELFTEST
+#if PICOCALC_LCD_SELFTEST && !defined(PICOCALC_KBD_DEBUG)
     uint64_t perf_last = time_us_64();
     uint32_t perf_calls = 0;
     uint32_t perf_frames0 = picocalc_lcd_frames;
@@ -1027,7 +1027,7 @@ int main(void) {
 
     while (true) {
         exec86(tormoz);
-#if PICOCALC_LCD_SELFTEST
+#if PICOCALC_LCD_SELFTEST && !defined(PICOCALC_KBD_DEBUG)
         perf_calls++;
 #endif
         if (delay) sleep_us(delay);
@@ -1042,7 +1042,7 @@ int main(void) {
                 sermouseevent(mb, mdx, mdy);
         }
 
-#if PICOCALC_LCD_SELFTEST
+#if PICOCALC_LCD_SELFTEST && !defined(PICOCALC_KBD_DEBUG)
         // Report throughput every 2 s into the debug overlay. exec86() runs
         // `tormoz` instructions per call, so this is emulated KIPS; on a healthy
         // build it should be in the thousands, and the frame rate tells us
