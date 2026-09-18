@@ -314,6 +314,7 @@ something, e.g. `DOSSHELL` in text mode.
 | Mouse — Ctrl-Alt-M with CTMOUSE loaded | working (tested in a Sierra SCI game) |
 | Audio (PWM) — AdLib/OPL2 | working |
 | Audio — PC speaker | fixed, **not yet verified**: now routed through the mixer to GP26/27 rather than synthesised on `PWM_BEEPER` (GP28) |
+| Sierra AGI text in message windows | **broken** — see the known issue below; affects all targets, not just PicoCalc |
 
 #### Disk images on the PicoCalc
 
@@ -358,6 +359,33 @@ configured, the option did not apply — check it landed with:
 grep -o "PSRAM_SM_CLOCK_HZ=[0-9]*" build.ninja
 ```
 
+#### Known issue: BIOS character output in graphics modes
+
+**Sierra AGI games show their message windows but the text inside is missing.**
+This is not PicoCalc-specific — it affects every pico-286 target.
+
+`int 10h AH=09/0Ah` (write character at cursor) routes *every* graphics mode
+through `tga_draw_char()` with the colour hardcoded to 9 (`cpu.c`, the
+`TODO: char attr?`). That writes the Tandy layout — packed 4-bit nibbles with an
+8 KB bank interleave — which is wrong for the planar EGA/VGA modes and for CGA,
+so BIOS-written characters do not land as glyphs. AGI draws its window boxes
+itself, which is why the boxes appear and only the text is lost.
+
+An attempt at a fix (render the glyph pixel by pixel, dispatching on the real
+mode, honouring `BL`) got letters onto the screen but they were **all the same
+glyph and in the wrong colours**, so something further is wrong. Leads not yet
+followed up:
+
+- `CX` (repeat count) is ignored by the handler. If AGI asks for N copies, that
+  could explain one glyph appearing where varied text belongs.
+- The background rule is a guess: the attempt painted background pixels in
+  colour 0 for `AH=09` and left them untouched for `AH=0Ah`, reading "does not
+  change the attribute" as "does not paint the background". That may be wrong.
+- Whether AGI even passes the character in `AL` on these calls is unverified.
+
+Next step is to log `AH`, `AL`, `BL`, `CX` and the cursor cell for the first few
+calls and read off what the caller actually passes, rather than infer it.
+
 #### Notes for future work
 
 - **Quad/QPI PSRAM looks possible and is unexplored.** The mainboard schematic
@@ -387,6 +415,10 @@ grep -o "PSRAM_SM_CLOCK_HZ=[0-9]*" build.ninja
   still uses byte-packed indexing; it is **not** a valid reference for new display
   drivers. Use `drivers/hdmi` or `drivers/vga-nextgen`, which track the current
   layout.
+- `src/linux-main.cpp` is stale for the same reason — it still treats `VIDEORAM`
+  as `uint8_t *`, so the Linux host build does not compile. (It also hits missing
+  POSIX declarations in `network-redirector.c.inl`.) Neither is reached in a
+  normal Pico build.
 
 ```bash
 cmake -DCMAKE_BUILD_TYPE=Release -DPICO_PLATFORM=rp2350 -DPICO_BOARD=pico2 \
