@@ -305,6 +305,15 @@ static void handle_event(const uint8_t key, const uint8_t state) {
     if (state != KEY_STATE_PRESSED && state != KEY_STATE_HOLD && state != KEY_STATE_RELEASED)
         return;
 
+#if PICOCALC_LCD_SELFTEST
+    // Bring-up builds log every raw event from the keyboard MCU plus the XT
+    // code it maps to, so a key that "does not work" can be told apart from a
+    // key that never arrives.
+    printf("K=%02X s=%d xt=%02X %s%s\n", key, state, special_to_xt(key),
+           real_shift_down ? "SH" : "--",
+           is_shift_combined(key) ? " comb" : "");
+#endif
+
     const bool down = state != KEY_STATE_RELEASED;
 
     // Ctrl-Alt-M toggles mouse mode. Swallow the matching release too, so the
