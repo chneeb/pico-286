@@ -109,6 +109,7 @@ else ()
     # running error total. Use before committing to a divisor from the sweep.
     option(PICOCALC_PSRAM_SOAK "PicoCalc: PSRAM soak-test build" OFF)
     set(PSRAM_FUDGE_VAL "0" CACHE STRING "PSRAM PIO program: 0 = plain, 1 = fudge")
+    set(PSRAM_SM_CLOCK_VAL "100000000" CACHE STRING "PSRAM PIO state-machine clock in Hz")
 
     # Audio Options (mutually exclusive)
     option(ENABLE_I2S_SOUND "Enable I2S audio output" OFF)
@@ -387,7 +388,7 @@ else ()
                 PSRAM_SPINLOCK=1 PSRAM_ASYNC=1 PSRAM_PIN_CS=20 PSRAM_PIN_SCK=21 PSRAM_PIN_MOSI=2 PSRAM_PIN_MISO=3
                 # ~100 MHz SM clock is the verified operating point for this
                 # board's PSRAM wiring; the divisor follows the system clock.
-                PSRAM_SM_CLOCK_HZ=100000000
+                PSRAM_SM_CLOCK_HZ=${PSRAM_SM_CLOCK_VAL}
                 PSRAM_FUDGE=${PSRAM_FUDGE_VAL}
                 $<$<BOOL:${PICOCALC_PSRAM_SWEEP}>:PICOCALC_PSRAM_SWEEP>
                 $<$<BOOL:${PICOCALC_PSRAM_SOAK}>:PICOCALC_PSRAM_SOAK>

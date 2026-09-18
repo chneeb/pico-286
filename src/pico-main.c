@@ -217,6 +217,18 @@ INLINE void _putchar(char character) {
 static uint32_t psram_errors = 0, psram_kbs = 0;
 
 #ifdef PICOCALC
+// The SPI rate the PSRAM state machine is ACTUALLY running at, read back from
+// the PIO clock divider rather than recomputed from the build-time define.
+// A knob that fails to reach the compiler is otherwise invisible - the build
+// system happily reports the value you asked for while the firmware runs
+// something else.
+static uint32_t psram_achieved_spi_mhz(void) {
+    const uint32_t reg = psram_spi.pio->sm[psram_spi.sm].clkdiv;
+    const float div = (float) (reg >> 16) + (float) ((reg >> 8) & 0xFF) / 256.0f;
+    if (div <= 0.0f) return 0;
+    return (uint32_t) ((float) clock_get_hz(clk_sys) / (2.0f * div) / 1000000.0f);
+}
+
 // Write then verify 64 x 4 KB spread across the whole 8 MB. A short round-trip
 // is not enough: marginal sampling timing passes a handful of bytes and then
 // corrupts in bulk, which is the failure both shapones and freesci-archive warn
@@ -946,7 +958,8 @@ int main(void) {
             psram_bulk_verify(&err, &kbs);
             total_err += err;
             pass++;
-            printf("soak %lu pass %lu err %lu KB/s %lus\n",
+            printf("%luMHz F%d p=%lu e=%lu %luKB/s %lus\n",
+                   (unsigned long) psram_achieved_spi_mhz(), PSRAM_FUDGE,
                    (unsigned long) pass, (unsigned long) total_err,
                    (unsigned long) kbs,
                    (unsigned long) ((time_us_64() - t0) / 1000000u));
@@ -1033,10 +1046,11 @@ int main(void) {
             // slowly-advancing IP is the BIOS grinding through something (the
             // POST memory test walks all 640 KB, and everything above the
             // 176 KB SRAM window is a PIO-SPI PSRAM transaction per access).
-            printf("%lu KIPS %lu fps %04X:%04X PS %lu/%lu\n",
+            printf("%lu KIPS %lu fps %04X:%04X PS %luMHz e=%lu %luKB/s\n",
                    (unsigned long) (instr / (perf_now - perf_last) * 1000),
                    (unsigned long) (frames * 1000000ull / (perf_now - perf_last)),
                    (unsigned) CPU_CS, (unsigned) CPU_IP,
+                   (unsigned long) psram_achieved_spi_mhz(),
                    (unsigned long) psram_errors, (unsigned long) psram_kbs);
             perf_last = perf_now;
             perf_calls = 0;
