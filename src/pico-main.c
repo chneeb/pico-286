@@ -1021,7 +1021,7 @@ int main(void) {
     // to be pumped from here; picocalc_kbd_poll() rate-limits itself.
 #if PICOCALC_LCD_SELFTEST && !defined(PICOCALC_KBD_DEBUG)
     uint64_t perf_last = time_us_64();
-    uint32_t perf_calls = 0;
+    uint64_t perf_instr = 0;
     uint32_t perf_frames0 = picocalc_lcd_frames;
 #endif
 
@@ -1035,7 +1035,7 @@ int main(void) {
         exec86(slice);
         picocalc_kbd_pump();
 #if PICOCALC_LCD_SELFTEST && !defined(PICOCALC_KBD_DEBUG)
-        perf_calls += slice == tormoz ? 1 : 0;
+        perf_instr += slice;   // slices vary while scancodes drain
 #endif
         if (delay) sleep_us(delay);
         picocalc_kbd_poll();
@@ -1057,7 +1057,7 @@ int main(void) {
         const uint64_t perf_now = time_us_64();
         if (perf_now - perf_last >= 2000000) {
             const uint32_t frames = picocalc_lcd_frames - perf_frames0;
-            const uint64_t instr = (uint64_t) perf_calls * (uint64_t) tormoz;
+            const uint64_t instr = perf_instr;
             // CS:IP says *where* the emulated CPU is. A stable CS=F000 with a
             // slowly-advancing IP is the BIOS grinding through something (the
             // POST memory test walks all 640 KB, and everything above the
@@ -1070,7 +1070,7 @@ int main(void) {
                    (unsigned long) psram_achieved_spi_mhz(),
                    (unsigned long) psram_errors);
             perf_last = perf_now;
-            perf_calls = 0;
+            perf_instr = 0;
             perf_frames0 = picocalc_lcd_frames;
         }
 #endif

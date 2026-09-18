@@ -307,11 +307,12 @@ something, e.g. `DOSSHELL` in text mode.
 | Display, all text and graphics modes | working, RGB565 at 75 MHz panel clock |
 | SD card + FAT, MS-DOS 4.0 boot | working |
 | PSRAM | working, soak-tested (0 errors, ~5.0 MB/s) |
-| Keyboard — letters, Shift, arrows, Ctrl-Alt-Del | working |
+| Keyboard — letters, Shift, shifted symbols, arrows, Ctrl-Alt-Del | working |
+| Keyboard — F6-F10 and the other Shift-combined keys | working |
 | Keyboard — CapsLock (synthesised-Shift path) | **not yet verified** |
+| Mouse — Ctrl-Alt-M with CTMOUSE loaded | working (tested in a Sierra SCI game) |
 | Audio (PWM) — AdLib/OPL2 | working |
 | Audio — PC speaker | **silent**: on `PWM_SOUND` builds port 61h drives `PWM_BEEPER` (GP28) directly instead of setting `speakerenabled`, so it never reaches the mixer feeding GP26/27, and GP28 is not wired to audio here |
-| Mouse (Ctrl-Alt-M + CTMOUSE) | **not yet verified** |
 
 #### Disk images on the PicoCalc
 
