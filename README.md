@@ -272,7 +272,7 @@ something, e.g. `DOSSHELL` in text mode.
 
 | Subsystem | Status |
 |---|---|
-| Display, all text and graphics modes | working |
+| Display, all text and graphics modes | working, RGB565 at 75 MHz panel clock |
 | SD card + FAT, MS-DOS 4.0 boot | working |
 | PSRAM | working, soak-tested (0 errors, ~5.0 MB/s) |
 | Keyboard — letters, Shift, arrows, Ctrl-Alt-Del | working |
@@ -303,7 +303,7 @@ rewritten — the filesystem itself is LBA-linear and does not move.
 | Option | Default | Notes |
 |---|---|---|
 | `PICOCALC_BRINGUP` | `ON` | Boot colour-bar self-test, a legible 8x8 debug overlay, and a `KIPS / fps / CS:IP` counter. **Turn OFF for normal use.** The two builds are named differently (`...-PICOCALC-BRINGUP-PWM.uf2` vs `...-PICOCALC-PWM.uf2`) so they cannot be confused. Note this is the *only* diagnostic channel: `printf` on this platform writes to `DEBUG_VRAM`, never to a serial port, so with it OFF a boot failure is a silent black screen. |
-| `PICOCALC_LCD_CLK_VAL` | `50000000` | Panel SPI clock. 50 MHz is the ClockworkPi reference rate; shapones drives this same panel at ~75 MHz. It scales the *transfer* half of a frame directly — at 16bpp roughly 60% of a frame is transfer and 40% is scanline unpacking, so the gain is real but sub-linear. The achieved rate is shown on the bring-up overlay as `fps@NNMHz`. |
+| `PICOCALC_LCD_CLK_VAL` | `75000000` | Panel SPI clock, device-verified. It scales the *transfer* half of a frame only — measured at 16bpp, a frame is ~60% transfer and ~40% scanline unpacking plus audio, so gains are real but sub-linear (24 fps at 50 MHz → 30 fps at 75 MHz, instrumented build). This is **above** the ILI9488 datasheet's nominal 66 MHz serial write cycle; accepted because the failure mode is visible (shearing, noise, dropped pixels) rather than silent. Drop to `50000000` if a panel shows artefacts. Achieved rate is shown as `fps@NNMHz`. |
 | `PICOCALC_SD_CLK_HZ` | `12500000` | SD bus clock. 12.5 MHz matches tiny_agi on this board; the 30 MHz Murmulator default is not reliable here. |
 | `PICOCALC_PSRAM_SWEEP` | `OFF` | One-shot measuring build. Sweeps PSRAM over (divisor x fudge), prints a table of SPI rate / errors / throughput, then stops — it does not boot the emulator. Use it to pick `PSRAM_SM_CLOCK_VAL` and `PSRAM_FUDGE_VAL` for a board, then rebuild normally. |
 | `PICOCALC_PSRAM_SOAK` | `OFF` | Soak build. Hammers the *configured* operating point and reports a running error total, so a candidate divisor can be checked over minutes and as the board warms, not just for one 256 KB pass. |

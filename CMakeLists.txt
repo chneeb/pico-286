@@ -101,10 +101,14 @@ else ()
     # default; raise it if your card and wiring tolerate it.
     set(PICOCALC_SD_CLK_HZ "12500000" CACHE STRING "PicoCalc SD SPI clock in Hz")
 
-    # Panel clock. 50 MHz is the ClockworkPi reference rate; shapones drives this
-    # same panel at ~75 MHz. Raising it scales the transfer half of a frame
-    # directly. The achieved rate is reported on the bring-up overlay.
-    set(PICOCALC_LCD_CLK_VAL "50000000" CACHE STRING "PicoCalc panel SPI clock in Hz")
+    # Panel clock. 75 MHz is device-verified here (30 fps vs 24 at 50 MHz, colours
+    # and geometry correct) and is the rate shapones drives this same panel at.
+    # Note it is above the ILI9488 datasheet's nominal 66 MHz serial write cycle:
+    # in spec terms this is an overclock, accepted because the failure mode is
+    # visible - shearing, noise or dropped pixels - rather than silent. Drop back
+    # to 50000000 if a panel shows artefacts. The achieved rate is reported on the
+    # bring-up overlay as fps@NNMHz.
+    set(PICOCALC_LCD_CLK_VAL "75000000" CACHE STRING "PicoCalc panel SPI clock in Hz")
 
     # One-shot measuring build: sweeps PSRAM (divisor x fudge), prints a table
     # and stops. Does not boot the emulator.
