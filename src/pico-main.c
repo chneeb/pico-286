@@ -932,6 +932,28 @@ int main(void) {
     picocalc_lcd_set_backlight(0xFF);
 #endif
 
+#ifdef PICOCALC_PSRAM_SOAK
+    // Hammer the CONFIGURED operating point (PSRAM_SM_CLOCK_HZ / PSRAM_FUDGE)
+    // and keep a running error total. A single 256 KB pass is not evidence for
+    // a config you intend to run permanently: marginal sampling timing passes
+    // a short test and fails in bulk, and timing drifts as the board warms up.
+    // Leave this running for a few minutes and watch the error column stay 0.
+    {
+        uint32_t pass = 0, total_err = 0;
+        const uint64_t t0 = time_us_64();
+        while (1) {
+            uint32_t err = 0, kbs = 0;
+            psram_bulk_verify(&err, &kbs);
+            total_err += err;
+            pass++;
+            printf("soak %lu pass %lu err %lu KB/s %lus\n",
+                   (unsigned long) pass, (unsigned long) total_err,
+                   (unsigned long) kbs,
+                   (unsigned long) ((time_us_64() - t0) / 1000000u));
+        }
+    }
+#endif
+
 #ifdef PICOCALC_PSRAM_SWEEP
     // The display is up now, so the table is readable. Stop here: picking an
     // operating point from this is a human decision, not something to guess at

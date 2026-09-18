@@ -104,6 +104,10 @@ else ()
     # One-shot measuring build: sweeps PSRAM (divisor x fudge), prints a table
     # and stops. Does not boot the emulator.
     option(PICOCALC_PSRAM_SWEEP "PicoCalc: PSRAM timing sweep build" OFF)
+
+    # Soak build: hammers the configured PSRAM operating point and reports a
+    # running error total. Use before committing to a divisor from the sweep.
+    option(PICOCALC_PSRAM_SOAK "PicoCalc: PSRAM soak-test build" OFF)
     set(PSRAM_FUDGE_VAL "0" CACHE STRING "PSRAM PIO program: 0 = plain, 1 = fudge")
 
     # Audio Options (mutually exclusive)
@@ -207,6 +211,8 @@ else ()
         # one looks like the option did nothing.
         if (PICOCALC_PSRAM_SWEEP)
             set(BUILD_NAME "${BUILD_NAME}-PSRAMSWEEP")
+        elseif (PICOCALC_PSRAM_SOAK)
+            set(BUILD_NAME "${BUILD_NAME}-PSRAMSOAK")
         elseif (PICOCALC_BRINGUP)
             set(BUILD_NAME "${BUILD_NAME}-BRINGUP")
         endif ()
@@ -384,6 +390,7 @@ else ()
                 PSRAM_SM_CLOCK_HZ=100000000
                 PSRAM_FUDGE=${PSRAM_FUDGE_VAL}
                 $<$<BOOL:${PICOCALC_PSRAM_SWEEP}>:PICOCALC_PSRAM_SWEEP>
+                $<$<BOOL:${PICOCALC_PSRAM_SOAK}>:PICOCALC_PSRAM_SOAK>
                 PWM_BEEPER=28 PWM_LEFT_CHANNEL=26 PWM_RIGHT_CHANNEL=27
                 CLOCK_PIN=22 PCM_PIN=22
                 # 30 MHz is a Murmulator value. tiny_agi runs the PicoCalc's
