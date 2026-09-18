@@ -642,7 +642,13 @@ static __always_inline bool init_psram() {
 #else
     const float clkdiv = 2.4f;
 #endif
-    psram_spi = psram_spi_init_clkdiv(pio1, -1, clkdiv, false);
+#ifndef PSRAM_FUDGE
+// The "fudge" PIO program adds an extra read-sync cycle. Which variant is
+// correct depends on the sampling phase and therefore pairs with the clock;
+// it is not independently tunable. Determine both together with a sweep.
+#define PSRAM_FUDGE 0
+#endif
+    psram_spi = psram_spi_init_clkdiv(pio1, -1, clkdiv, PSRAM_FUDGE);
     psram_write32(&psram_spi, 0x313373, 0xDEADBEEF);
     PSRAM_AVAILABLE = 0xDEADBEEF == psram_read32(&psram_spi, 0x313373);
     // Zeroing 8 MB is ~2M SPI transactions. Pointless if nothing answered.

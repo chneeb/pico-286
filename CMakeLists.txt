@@ -101,6 +101,11 @@ else ()
     # default; raise it if your card and wiring tolerate it.
     set(PICOCALC_SD_CLK_HZ "12500000" CACHE STRING "PicoCalc SD SPI clock in Hz")
 
+    # One-shot measuring build: sweeps PSRAM (divisor x fudge), prints a table
+    # and stops. Does not boot the emulator.
+    option(PICOCALC_PSRAM_SWEEP "PicoCalc: PSRAM timing sweep build" OFF)
+    set(PSRAM_FUDGE_VAL "0" CACHE STRING "PSRAM PIO program: 0 = plain, 1 = fudge")
+
     # Audio Options (mutually exclusive)
     option(ENABLE_I2S_SOUND "Enable I2S audio output" OFF)
     option(ENABLE_PWM_SOUND "Enable PWM audio output" OFF)
@@ -200,7 +205,9 @@ else ()
         # Distinct output name: the bring-up and normal builds are otherwise
         # byte-for-byte indistinguishable by filename, and flashing the wrong
         # one looks like the option did nothing.
-        if (PICOCALC_BRINGUP)
+        if (PICOCALC_PSRAM_SWEEP)
+            set(BUILD_NAME "${BUILD_NAME}-PSRAMSWEEP")
+        elseif (PICOCALC_BRINGUP)
             set(BUILD_NAME "${BUILD_NAME}-BRINGUP")
         endif ()
     elseif (ENABLE_TFT)
@@ -375,6 +382,8 @@ else ()
                 # ~100 MHz SM clock is the verified operating point for this
                 # board's PSRAM wiring; the divisor follows the system clock.
                 PSRAM_SM_CLOCK_HZ=100000000
+                PSRAM_FUDGE=${PSRAM_FUDGE_VAL}
+                $<$<BOOL:${PICOCALC_PSRAM_SWEEP}>:PICOCALC_PSRAM_SWEEP>
                 PWM_BEEPER=28 PWM_LEFT_CHANNEL=26 PWM_RIGHT_CHANNEL=27
                 CLOCK_PIN=22 PCM_PIN=22
                 # 30 MHz is a Murmulator value. tiny_agi runs the PicoCalc's

@@ -216,6 +216,42 @@ INLINE void _putchar(char character) {
 // not scroll off the 10-line debug overlay.
 static uint32_t psram_errors = 0, psram_kbs = 0;
 
+#ifdef PICOCALC
+// Write then verify 64 x 4 KB spread across the whole 8 MB. A short round-trip
+// is not enough: marginal sampling timing passes a handful of bytes and then
+// corrupts in bulk, which is the failure both shapones and freesci-archive warn
+// about. Spreading the blocks also catches address-dependent marginality.
+static void psram_bulk_verify(uint32_t *out_errors, uint32_t *out_kbs) {
+    const uint32_t BLOCKS = 64, BLOCK_WORDS = 1024;
+    const uint32_t stride = (8ul << 20) / BLOCKS;
+    uint32_t errors = 0;
+    const uint64_t t0 = time_us_64();
+    for (uint32_t b = 0; b < BLOCKS; b++) {
+        const uint32_t base = b * stride;
+        for (uint32_t i = 0; i < BLOCK_WORDS; i++) {
+            const uint32_t a = base + i * 4;
+            write32psram(a, a * 2654435761u);
+        }
+    }
+    for (uint32_t b = 0; b < BLOCKS; b++) {
+        const uint32_t base = b * stride;
+        for (uint32_t i = 0; i < BLOCK_WORDS; i++) {
+            const uint32_t a = base + i * 4;
+            if (read32psram(a) != (a * 2654435761u)) errors++;
+        }
+    }
+    const uint64_t dt = time_us_64() - t0;
+    const uint32_t bytes = BLOCKS * BLOCK_WORDS * 4 * 2; // written + read
+    *out_errors = errors;
+    *out_kbs = dt ? (uint32_t) ((uint64_t) bytes * 1000u / dt) : 0;
+}
+#endif
+
+#ifdef PICOCALC_PSRAM_SWEEP
+static struct { uint32_t spi_mhz; uint32_t fudge, err, kbs; } sweep[8];
+static int n_sweep = 0;
+#endif
+
 volatile int16_t last_sb_sample = 0;
 volatile bool ask_to_blast = false;
 
@@ -834,32 +870,41 @@ int main(void) {
     // single 32-bit round-trip at one address, which is far too weak to catch
     // marginal sampling timing - both shapones and freesci-archive record that
     // a short round-trip passes on configurations that then corrupt in bulk.
-    // This matters here because we run at 396 MHz, and freesci found PIO PSRAM
-    // on this same PCB FAILS at 252 MHz even with a compensating divisor.
     if (PSRAM_AVAILABLE) {
-        const uint32_t BLOCKS = 64, BLOCK_WORDS = 1024; // 64 x 4 KB spread over 8 MB
-        const uint32_t stride = (8ul << 20) / BLOCKS;
-        uint32_t errors = 0;
-        const uint64_t t0 = time_us_64();
-        for (uint32_t b = 0; b < BLOCKS; b++) {
-            const uint32_t base = b * stride;
-            for (uint32_t i = 0; i < BLOCK_WORDS; i++) {
-                const uint32_t a = base + i * 4;
-                write32psram(a, a * 2654435761u);
-            }
-        }
-        for (uint32_t b = 0; b < BLOCKS; b++) {
-            const uint32_t base = b * stride;
-            for (uint32_t i = 0; i < BLOCK_WORDS; i++) {
-                const uint32_t a = base + i * 4;
-                if (read32psram(a) != (a * 2654435761u)) errors++;
-            }
-        }
-        const uint64_t dt = time_us_64() - t0;
-        const uint32_t bytes = BLOCKS * BLOCK_WORDS * 4 * 2; // written + read
-        psram_errors = errors;
-        psram_kbs = dt ? (uint32_t) ((uint64_t) bytes * 1000u / dt) : 0;
+        psram_bulk_verify(&psram_errors, &psram_kbs);
     }
+
+#ifdef PICOCALC_PSRAM_SWEEP
+    // Sweep (divisor x fudge) and record the results. Re-initialising is safe
+    // here: nothing else touches PSRAM until core1 starts and the emulator is
+    // reset, both of which happen later. Results are printed once the display
+    // is up, then we stop - this build is a measuring instrument, not a PC.
+    {
+        static const float divs[] = {4.0f, 3.0f, 2.5f, 2.0f};
+        const uint32_t sys_mhz = clock_get_hz(clk_sys) / 1000000u;
+        psram_spi_uninit(psram_spi, PSRAM_FUDGE);
+        for (int di = 0; di < 4; di++) {
+            for (int fu = 0; fu < 2; fu++) {
+                psram_spi = psram_spi_init_clkdiv(pio1, -1, divs[di], fu != 0);
+                // Prove the link works at all before timing it.
+                psram_write32(&psram_spi, 0x313373, 0xDEADBEEF);
+                const bool alive = 0xDEADBEEF == psram_read32(&psram_spi, 0x313373);
+                uint32_t err = 0xFFFFFFFFu, kbs = 0;
+                if (alive) psram_bulk_verify(&err, &kbs);
+                sweep[n_sweep].spi_mhz = (uint32_t) ((float) sys_mhz / (2.0f * divs[di]));
+                sweep[n_sweep].fudge = fu;
+                sweep[n_sweep].err = err;
+                sweep[n_sweep].kbs = kbs;
+                n_sweep++;
+                psram_spi_uninit(psram_spi, fu != 0);
+            }
+        }
+        // Leave the bus on the configured default so the machine still works.
+        psram_spi = psram_spi_init_clkdiv(pio1, -1,
+                                          (float) clock_get_hz(clk_sys) / (float) PSRAM_SM_CLOCK_HZ,
+                                          PSRAM_FUDGE);
+    }
+#endif
 #endif
 
     // Initialize peripherals
@@ -885,6 +930,23 @@ int main(void) {
     // stays the only user of the keyboard MCU's I2C bus.
     for (int i = 0; i < 2000 && !picocalc_lcd_ready; i++) sleep_ms(1);
     picocalc_lcd_set_backlight(0xFF);
+#endif
+
+#ifdef PICOCALC_PSRAM_SWEEP
+    // The display is up now, so the table is readable. Stop here: picking an
+    // operating point from this is a human decision, not something to guess at
+    // automatically - a config that passes once may still be marginal.
+    printf("PSRAM SWEEP @%luMHz\n", (unsigned long) (clock_get_hz(clk_sys) / 1000000u));
+    for (int i = 0; i < n_sweep; i++) {
+        if (sweep[i].err == 0xFFFFFFFFu)
+            printf(" %2lu MHz F%lu  DEAD\n",
+                   (unsigned long) sweep[i].spi_mhz, (unsigned long) sweep[i].fudge);
+        else
+            printf(" %2lu MHz F%lu %5lu err %5lu KB/s\n",
+                   (unsigned long) sweep[i].spi_mhz, (unsigned long) sweep[i].fudge,
+                   (unsigned long) sweep[i].err, (unsigned long) sweep[i].kbs);
+    }
+    while (1) tight_loop_contents();
 #endif
 
     if (new_cpu_mhz != cpu_mhz) {
