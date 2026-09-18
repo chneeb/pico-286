@@ -206,7 +206,7 @@ requires an RP2350 (Pico 2).
 | **Keyboard**     | SDA: 6, SCL: 7                               | I2C1, addr 0x1F — also owns both backlights       |
 | **SD Card**      | CS: 17, SCK: 18, MOSI: 19, MISO: 16          | SPI0                                              |
 | **PSRAM**        | CS: 20, SCK: 21, MOSI: 2, MISO: 3            | On-board chip, driven by the PIO PSRAM driver     |
-| **PWM Audio**    | Beeper: 28, L: 26, R: 27                     | Matches the stock pinout                          |
+| **PWM Audio**    | L: 26 (`PWM_L`), R: 27 (`PWM_R`)             | Per the mainboard schematic. `PWM_BEEPER`/GP28 is unused here — the PC speaker is mixed into L/R instead |
 
 Notes and limitations:
 
@@ -312,7 +312,7 @@ something, e.g. `DOSSHELL` in text mode.
 | Keyboard — CapsLock (synthesised-Shift path) | **not yet verified** |
 | Mouse — Ctrl-Alt-M with CTMOUSE loaded | working (tested in a Sierra SCI game) |
 | Audio (PWM) — AdLib/OPL2 | working |
-| Audio — PC speaker | **silent**: on `PWM_SOUND` builds port 61h drives `PWM_BEEPER` (GP28) directly instead of setting `speakerenabled`, so it never reaches the mixer feeding GP26/27, and GP28 is not wired to audio here |
+| Audio — PC speaker | fixed, **not yet verified**: now routed through the mixer to GP26/27 rather than synthesised on `PWM_BEEPER` (GP28) |
 
 #### Disk images on the PicoCalc
 
@@ -359,9 +359,14 @@ grep -o "PSRAM_SM_CLOCK_HZ=[0-9]*" build.ninja
 
 #### Notes for future work
 
-- Quad/QPI PSRAM is **not possible** on this board: only two data lines (MOSI GP2,
-  MISO GP3) are routed, and QPI needs SIO0-3. Single-bit SPI is the ceiling, which
-  puts a byte access at 40 bits.
+- **Quad/QPI PSRAM looks possible and is unexplored.** The mainboard schematic
+  routes all four data lines — `GP2 RAM_TX` (SIO0), `GP3 RAM_RX` (SIO1),
+  `GP4 RAM_IO2`, `GP5 RAM_IO3` — plus `GP20 RAM_CS` and `GP21 RAM_SCK`. All three
+  PicoCalc ports on hand (this one, shapones, freesci-archive) drive it as
+  single-bit SPI over two wires, which caps a byte access at 40 bits on the wire.
+  QPI would cut the address and data phases by four. It needs a new PIO program
+  and the QPI enable/exit sequence, and GP4/GP5 must not be used for anything
+  else (shapones disables its Nunchuck support for exactly this reason).
 - **Measured PSRAM operating points on PicoCalc hardware** (396 MHz system clock,
   random 32-bit accesses — not bulk DMA, so these are lower than a sequential
   figure):

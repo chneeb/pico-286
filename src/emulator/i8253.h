@@ -116,7 +116,9 @@ static inline void i8253_write(const uint16_t port_number, const uint8_t data) {
             timer_period = (int)(PIT_FREQUENCY / divisor);
 #endif
         } else if (channel_index == 2) {
-#if I2S_SOUND || HARDWARE_SOUND || !PICO_ON_DEVICE
+#if I2S_SOUND || HARDWARE_SOUND || !PICO_ON_DEVICE || defined(PICOCALC)
+            // See the port 61h note in ports.c: PICOCALC mixes the beeper
+            // rather than synthesising it on PWM_BEEPER.
             speakerenabled = (port61 & 3) == 3;
 #else
             pwm_config config = pwm_get_default_config();

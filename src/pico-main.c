@@ -382,9 +382,14 @@ void __time_critical_func() second_core(void) {
     pwm_init(pwm_gpio_to_slice_num(PWM_LEFT_CHANNEL), &pwm, true);
     pwm_init(pwm_gpio_to_slice_num(PWM_RIGHT_CHANNEL), &pwm, true);
 
+#ifndef PICOCALC
+    // Not on the PicoCalc: the beeper is mixed into PWM_LEFT/RIGHT instead, and
+    // GP28 has no net of its own in the mainboard schematic - it is only
+    // brought out to a header - so there is no reason to drive it.
     gpio_set_function(PWM_BEEPER, GPIO_FUNC_PWM);
     pwm_config_set_clkdiv(&pwm, 127);
     pwm_init(pwm_gpio_to_slice_num(PWM_BEEPER), &pwm, true);
+#endif
 
 #elif HARDWARE_SOUND
     init_74hc595();

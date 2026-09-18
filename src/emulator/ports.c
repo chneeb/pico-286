@@ -136,14 +136,18 @@ void portout(uint16_t portnum, uint16_t value) {
             return i8253_write(portnum, value);
         case 0x61: // PC Speaker
             port61 = value;
+            // PICOCALC takes the mixed path: its audio is PWM_LEFT/RIGHT on
+            // GP26/27, and PWM_BEEPER (GP28) is not wired to the amplifier, so
+            // a square wave synthesised there would be inaudible. Going through
+            // speaker_sample() puts the beeper in the same mix as the OPL.
             if ((value & 3) == 3) {
-#if I2S_SOUND || HARDWARE_SOUND || !PICO_ON_DEVICE
+#if I2S_SOUND || HARDWARE_SOUND || !PICO_ON_DEVICE || defined(PICOCALC)
                 speakerenabled = 1;
 #else
                 pwm_set_gpio_level(PWM_BEEPER, 127);
 #endif
             } else {
-#if I2S_SOUND || HARDWARE_SOUND || !PICO_ON_DEVICE
+#if I2S_SOUND || HARDWARE_SOUND || !PICO_ON_DEVICE || defined(PICOCALC)
                 speakerenabled = 0;
 #else
                 pwm_set_gpio_level(PWM_BEEPER, 0);
