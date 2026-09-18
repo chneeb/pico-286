@@ -1026,9 +1026,16 @@ int main(void) {
 #endif
 
     while (true) {
-        exec86(tormoz);
+        // Short emulation slices while scancodes are queued: port 0x60 has no
+        // hardware queue, so the CPU has to actually run - and the BIOS service
+        // IRQ1 - between one code and the next, or the earlier one is lost.
+        // 2048 instructions is ~2 ms at this speed, comfortably more than the
+        // int 9 handler needs, and costs nothing when the queue is empty.
+        const uint32_t slice = picocalc_kbd_pending() ? 2048 : tormoz;
+        exec86(slice);
+        picocalc_kbd_pump();
 #if PICOCALC_LCD_SELFTEST && !defined(PICOCALC_KBD_DEBUG)
-        perf_calls++;
+        perf_calls += slice == tormoz ? 1 : 0;
 #endif
         if (delay) sleep_us(delay);
         picocalc_kbd_poll();

@@ -251,6 +251,13 @@ shape that mapping:
   Shifts. Every symbol is a plain or Shift combination, and the full ASCII set is
   reachable. `\` is a dedicated key (Shift gives `|`), `:` is Shift+`;`,
   `>` is Shift+`.`.
+- **Scancodes are queued.** `handleScancode()` writes a single byte to port
+  0x60 — there is no hardware queue — and the keyboard is polled from core0, the
+  same core that runs `exec86()`. Two scancodes emitted in one poll therefore
+  collapse to the last one, because the emulated CPU never runs in between. Any
+  key needing more than one code (a synthesised Shift, or Shift suppression
+  below) is silently broken by this. The driver queues codes and releases one
+  per short emulation slice.
 - **Some keys exist only as Shift combinations**, and the firmware folds Shift
   in and reports a *different* key code: Shift+F1..F5 become F6..F10, Shift+Tab
   is Home, Shift+Del is End, Shift+Esc is Break, Shift+Enter is Insert, and

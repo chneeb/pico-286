@@ -215,12 +215,51 @@ int picocalc_read_battery(void) {
 
 // ─── Scancode emission ─────────────────────────────────────────────────────
 
+// ─── Scancode queue ────────────────────────────────────────────────────────
+//
+// handleScancode() writes a single byte to port 0x60 - there is no hardware
+// queue - and this driver is polled from core0, the same core that runs
+// exec86(). The emulated CPU therefore does not execute between two
+// consecutive calls, so emitting two scancodes in one poll silently loses the
+// first. That is fatal for any key that needs more than one code: suppressing
+// Shift before a pre-combined F-key dropped the Shift break, leaving the BIOS
+// with Shift latched so F6 arrived as Shift+F6 and was ignored.
+//
+// So scancodes are queued and released one at a time, with the emulation given
+// a slice in between (see picocalc_kbd_pending() and the main loop).
+#define SC_QUEUE_SIZE 32
+#define SC_GAP_US     1500      // ~1.5 ms between codes; the BIOS ISR needs far less
+
+static uint8_t sc_queue[SC_QUEUE_SIZE];
+static uint8_t sc_head = 0, sc_tail = 0;
+static uint64_t last_sc_us = 0;
+
+static void sc_push(const uint8_t code) {
+    const uint8_t next = (uint8_t) ((sc_head + 1) % SC_QUEUE_SIZE);
+    if (next == sc_tail) return;   // full: drop rather than corrupt the order
+    sc_queue[sc_head] = code;
+    sc_head = next;
+}
+
 static inline void send_make(const uint8_t xt) {
-    handleScancode(xt);
+    sc_push(xt);
 }
 
 static inline void send_break(const uint8_t xt) {
-    handleScancode(xt | 0x80);
+    sc_push(xt | 0x80);
+}
+
+bool picocalc_kbd_pending(void) {
+    return sc_head != sc_tail;
+}
+
+void picocalc_kbd_pump(void) {
+    if (sc_head == sc_tail) return;
+    const uint64_t now = time_us_64();
+    if (now - last_sc_us < SC_GAP_US) return;
+    last_sc_us = now;
+    handleScancode(sc_queue[sc_tail]);
+    sc_tail = (uint8_t) ((sc_tail + 1) % SC_QUEUE_SIZE);
 }
 
 // These keys only exist as Shift combinations on this keyboard: the firmware
@@ -482,6 +521,7 @@ void keyboard_init(void) {
     suppress_owner = 0;
     synth_shift_down = ctrl_down = alt_down = false;
     poll_phase = 0;
+    sc_head = sc_tail = 0;
     mouse_mode = false;
     for (int i = 0; i < DIR_COUNT; i++) arrow_held[i] = false;
     mouse_buttons = 0; mouse_buttons_sent = 0xFF;

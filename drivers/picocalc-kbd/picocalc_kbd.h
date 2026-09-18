@@ -45,6 +45,13 @@ void keyboard_init(void);
 // handleScancode(). Safe to call as often as you like; it rate-limits itself.
 void picocalc_kbd_poll(void);
 
+// Scancodes are queued rather than written straight to port 0x60, which has no
+// hardware queue: two codes emitted without the emulated CPU running in between
+// would collapse to the last one. Call picocalc_kbd_pump() to release one, and
+// give the emulation a slice while picocalc_kbd_pending() is true.
+bool picocalc_kbd_pending(void);
+void picocalc_kbd_pump(void);
+
 int picocalc_read_battery(void);
 
 // ─── Mouse emulation ───────────────────────────────────────────────────────
