@@ -194,12 +194,20 @@ static inline void start_pixels(void) {
     lcd_write_cmd(&cmd, 1);
     pcalc_lcd_wait_idle(PIO_LCD, sm_lcd);
     lcd_set_dc_cs(1, 0);
+    // Reset the shift state before changing the autopull threshold. Raising it
+    // from 8 to 32 while the output shift counter sits at 8 would leave the SM
+    // believing the OSR still holds 24 unshifted bits of the last command word,
+    // and it would clock those out ahead of the first pixel. pio_sm_restart()
+    // clears the shift counters, so the threshold change starts from a known
+    // state instead of an inherited one.
+    pio_sm_restart(PIO_LCD, sm_lcd);
     pcalc_lcd_set_pull_threshold(PIO_LCD, sm_lcd, 32);
 }
 
 static inline void stop_pixels(void) {
     pcalc_lcd_wait_idle(PIO_LCD, sm_lcd);
     lcd_set_dc_cs(1, 1);
+    pio_sm_restart(PIO_LCD, sm_lcd);   // same reasoning, 32 -> 8
     pcalc_lcd_set_pull_threshold(PIO_LCD, sm_lcd, 8);
 }
 
@@ -717,12 +725,21 @@ void graphics_init(void) {
             idx_line[i] = i * 8 / 320; // 8 bars of 40 px
         // Borrow the palette for the pattern, then clear it again below.
         for (int i = 0; i < 8; i++) palette[i] = panel565(bars[i]);
+        palette[8] = panel565(0xFFFFFFu); // frame colour
 
+        // A one-pixel white frame around the whole panel. If the pixel stream is
+        // offset, the left edge does not sit at column 0 and the right edge
+        // wraps onto the next row - which makes an offset of one or two pixels
+        // obvious and countable, where colour bars alone would hide it.
         lcd_set_window(0, 0, PICOCALC_LCD_WIDTH, PICOCALC_LCD_HEIGHT);
         start_pixels();
-        pack_line_320(idx_line, word_line[0]);
+        idx_line[0] = idx_line[PICOCALC_LCD_WIDTH - 1] = 8;
+        pack_line_320(idx_line, word_line[0]);           // bars + side frame
+        for (int i = 0; i < 320; i++) idx_line[i] = 8;
+        pack_line_320(idx_line, word_line[1]);           // solid frame row
         for (int row = 0; row < PICOCALC_LCD_HEIGHT; row++)
-            send_words(word_line[0], LINE_WORDS);
+            send_words((row == 0 || row == PICOCALC_LCD_HEIGHT - 1)
+                       ? word_line[1] : word_line[0], LINE_WORDS);
         while (dma_channel_is_busy(lcd_dma_chan)) {
         }
         stop_pixels();
