@@ -72,6 +72,11 @@ extern volatile bool picocalc_lcd_ready;
 // Frames pushed to the panel since boot.
 extern volatile uint32_t picocalc_lcd_frames;
 
+// The panel SPI rate actually in effect, read back from the PIO clock divider
+// rather than recomputed from the build-time define, so an option that failed
+// to reach the compiler is visible on the device instead of silently ignored.
+uint32_t picocalc_lcd_achieved_mhz(void);
+
 // Allow the driver to pump audio/timer work while it waits on the panel DMA.
 // Must not be called until the emulator's sound state exists.
 void picocalc_lcd_enable_yield(void);

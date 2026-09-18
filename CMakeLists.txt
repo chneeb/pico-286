@@ -101,6 +101,11 @@ else ()
     # default; raise it if your card and wiring tolerate it.
     set(PICOCALC_SD_CLK_HZ "12500000" CACHE STRING "PicoCalc SD SPI clock in Hz")
 
+    # Panel clock. 50 MHz is the ClockworkPi reference rate; shapones drives this
+    # same panel at ~75 MHz. Raising it scales the transfer half of a frame
+    # directly. The achieved rate is reported on the bring-up overlay.
+    set(PICOCALC_LCD_CLK_VAL "50000000" CACHE STRING "PicoCalc panel SPI clock in Hz")
+
     # One-shot measuring build: sweeps PSRAM (divisor x fudge), prints a table
     # and stops. Does not boot the emulator.
     option(PICOCALC_PSRAM_SWEEP "PicoCalc: PSRAM timing sweep build" OFF)
@@ -390,6 +395,7 @@ else ()
                 PICOCALC_LCD_CLK_PIN=10 PICOCALC_LCD_DATA_PIN=11
                 PICOCALC_LCD_CS_PIN=13 PICOCALC_LCD_DC_PIN=14 PICOCALC_LCD_RST_PIN=15
                 PICOCALC_KBD_SDA_PIN=6 PICOCALC_KBD_SCL_PIN=7
+                PICOCALC_LCD_MAX_HZ=${PICOCALC_LCD_CLK_VAL}
                 SDCARD_PIN_SPI0_CS=17 SDCARD_PIN_SPI0_SCK=18 SDCARD_PIN_SPI0_MOSI=19 SDCARD_PIN_SPI0_MISO=16
                 PSRAM_SPINLOCK=1 PSRAM_ASYNC=1 PSRAM_PIN_CS=20 PSRAM_PIN_SCK=21 PSRAM_PIN_MOSI=2 PSRAM_PIN_MISO=3
                 # ~100 MHz SM clock is the verified operating point for this

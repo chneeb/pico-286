@@ -111,6 +111,13 @@ void picocalc_lcd_enable_yield(void) {
     yield_enabled = true;
 }
 
+uint32_t picocalc_lcd_achieved_mhz(void) {
+    const uint32_t reg = PIO_LCD->sm[sm_lcd].clkdiv;
+    const float div = (float) (reg >> 16) + (float) ((reg >> 8) & 0xFF) / 256.0f;
+    if (div <= 0.0f) return 0;
+    return (uint32_t) ((float) clock_get_hz(clk_sys) / (2.0f * div) / 1000000.0f);
+}
+
 // ─── Panel plumbing ────────────────────────────────────────────────────────
 
 static inline void lcd_set_dc_cs(const bool dc, const bool cs) {
