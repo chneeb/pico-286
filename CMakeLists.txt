@@ -197,6 +197,12 @@ else ()
     # Add display type
     if (ENABLE_PICOCALC)
         set(BUILD_NAME "${BUILD_NAME}-PICOCALC")
+        # Distinct output name: the bring-up and normal builds are otherwise
+        # byte-for-byte indistinguishable by filename, and flashing the wrong
+        # one looks like the option did nothing.
+        if (PICOCALC_BRINGUP)
+            set(BUILD_NAME "${BUILD_NAME}-BRINGUP")
+        endif ()
     elseif (ENABLE_TFT)
         set(BUILD_NAME "${BUILD_NAME}-TFT")
     elseif (ENABLE_NTSC-TV)

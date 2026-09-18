@@ -253,7 +253,7 @@ rewritten — the filesystem itself is LBA-linear and does not move.
 
 | Option | Default | Notes |
 |---|---|---|
-| `PICOCALC_BRINGUP` | `ON` | Boot colour-bar self-test plus a legible 8x8 debug overlay. **Turn OFF for normal use.** Note this is the *only* diagnostic channel: `printf` on this platform writes to `DEBUG_VRAM`, never to a serial port, so with it OFF a boot failure is a silent black screen. |
+| `PICOCALC_BRINGUP` | `ON` | Boot colour-bar self-test, a legible 8x8 debug overlay, and a `KIPS / fps / CS:IP` counter. **Turn OFF for normal use.** The two builds are named differently (`...-PICOCALC-BRINGUP-PWM.uf2` vs `...-PICOCALC-PWM.uf2`) so they cannot be confused. Note this is the *only* diagnostic channel: `printf` on this platform writes to `DEBUG_VRAM`, never to a serial port, so with it OFF a boot failure is a silent black screen. |
 | `PICOCALC_SD_CLK_HZ` | `12500000` | SD bus clock. 12.5 MHz matches tiny_agi on this board; the 30 MHz Murmulator default is not reliable here. |
 | `PSRAM_SM_CLOCK_HZ` | `100000000` | PIO state-machine clock for PSRAM, divisor derived from the system clock. ~100 MHz is the operating point verified by a timing sweep on this PCB; reliability is a sampling-phase problem that fails at both faster *and* slower settings, so do not change it without a bulk read/verify. |
 
