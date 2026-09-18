@@ -99,7 +99,12 @@ else ()
 
     # SD bus clock. 12.5 MHz is what tiny_agi uses on this board and is the safe
     # default; raise it if your card and wiring tolerate it.
-    set(PICOCALC_SD_CLK_HZ "12500000" CACHE STRING "PicoCalc SD SPI clock in Hz")
+    # 30 MHz: freesci-archive runs this rate on the same class of card on this
+    # board (and notes frank-quest does so without DMA, as we do). Safe by
+    # construction - the card is negotiated at 100 kHz and only then switched,
+    # so one that cannot sustain it fails visibly at mount rather than
+    # corrupting data. Drop to 12500000 if a card misbehaves.
+    set(PICOCALC_SD_CLK_HZ "30000000" CACHE STRING "PicoCalc SD SPI clock in Hz")
 
     # Panel clock. 75 MHz is device-verified here (30 fps vs 24 at 50 MHz, colours
     # and geometry correct) and is the rate shapones drives this same panel at.

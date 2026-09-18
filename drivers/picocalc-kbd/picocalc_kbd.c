@@ -158,7 +158,12 @@ static float mouse_speed = MOUSE_SPEED_MIN;
 static uint64_t last_mouse_us = 0;
 static bool swallow_toggle_key = false;
 
-static bool real_shift_down = false;
+// Physical Shift, tracked per side so suppression restores exactly what was
+// held. See shift_suppress() for why that is needed.
+static bool shift_l_down = false, shift_r_down = false;
+static bool shift_suppressed = false;
+static uint8_t suppress_owner = 0;      // XT code that triggered suppression
+#define real_shift_down (shift_l_down || shift_r_down)
 static bool synth_shift_down = false;
 static bool ctrl_down = false;
 static bool alt_down = false;
@@ -216,6 +221,41 @@ static inline void send_make(const uint8_t xt) {
 
 static inline void send_break(const uint8_t xt) {
     handleScancode(xt | 0x80);
+}
+
+// These keys only exist as Shift combinations on this keyboard: the firmware
+// folds Shift in and reports a different key code entirely (Shift+F2 -> F7,
+// Shift+Tab -> Home, ...). Forwarding the physical Shift as well would make the
+// emulated PC see Shift+F7, which is a different BIOS scancode from F7, so the
+// application never sees the key that was actually pressed.
+static bool is_shift_combined(const uint8_t key) {
+    switch (key) {
+        case 0x86: case 0x87: case 0x88: case 0x89: // F6-F9
+        case KEY_F10:
+        case KEY_END: case KEY_HOME: case KEY_INSERT:
+        case KEY_BREAK: case KEY_PAGE_UP: case KEY_PAGE_DOWN:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Hide the physical Shift from the emulated keyboard for the duration of a
+// pre-combined key, then put it back if it is still held.
+static void shift_suppress(const uint8_t owner) {
+    if (shift_suppressed || !real_shift_down) return;
+    if (shift_l_down) send_break(XT_LSHIFT);
+    if (shift_r_down) send_break(XT_RSHIFT);
+    shift_suppressed = true;
+    suppress_owner = owner;
+}
+
+static void shift_restore(const uint8_t owner) {
+    if (!shift_suppressed || suppress_owner != owner) return;
+    if (shift_l_down) send_make(XT_LSHIFT);
+    if (shift_r_down) send_make(XT_RSHIFT);
+    shift_suppressed = false;
+    suppress_owner = 0;
 }
 
 // Map a PicoCalc special key to an XT code, 0 if we have no equivalent.
@@ -319,9 +359,13 @@ static void handle_event(const uint8_t key, const uint8_t state) {
     switch (key) {
         case KEY_MOD_SHL:
         case KEY_MOD_SHR: {
-            const uint8_t xt = key == KEY_MOD_SHL ? XT_LSHIFT : XT_RSHIFT;
             if (state == KEY_STATE_HOLD) return; // already down, don't repeat
-            real_shift_down = down;
+            const bool is_left = key == KEY_MOD_SHL;
+            if (is_left) shift_l_down = down; else shift_r_down = down;
+            // While suppressed the emulated side already believes Shift is up,
+            // so do not send a second break for it.
+            if (shift_suppressed) return;
+            const uint8_t xt = is_left ? XT_LSHIFT : XT_RSHIFT;
             down ? send_make(xt) : send_break(xt);
             return;
         }
@@ -351,6 +395,7 @@ static void handle_event(const uint8_t key, const uint8_t state) {
 
     uint8_t xt = hotkey_substitute(key);
     bool needs_shift = false;
+    const bool combined = is_shift_combined(key);
 
     if (!xt) {
         xt = special_to_xt(key);
@@ -363,6 +408,7 @@ static void handle_event(const uint8_t key, const uint8_t state) {
     }
 
     if (down) {
+        if (combined) shift_suppress(xt);
         // Only synthesise Shift if the user isn't already holding one - if we
         // faked a break for a key they are physically holding, the emulated
         // keyboard would think Shift was up for everything that followed.
@@ -377,6 +423,7 @@ static void handle_event(const uint8_t key, const uint8_t state) {
             synth_shift_down = false;
             send_break(XT_LSHIFT);
         }
+        if (combined) shift_restore(xt);
     }
 }
 
@@ -421,7 +468,9 @@ void keyboard_init(void) {
     gpio_pull_up(PICOCALC_KBD_SDA_PIN);
     gpio_pull_up(PICOCALC_KBD_SCL_PIN);
 
-    real_shift_down = synth_shift_down = ctrl_down = alt_down = false;
+    shift_l_down = shift_r_down = shift_suppressed = false;
+    suppress_owner = 0;
+    synth_shift_down = ctrl_down = alt_down = false;
     poll_phase = 0;
     mouse_mode = false;
     for (int i = 0; i < DIR_COUNT; i++) arrow_held[i] = false;

@@ -251,6 +251,13 @@ shape that mapping:
   Shifts. Every symbol is a plain or Shift combination, and the full ASCII set is
   reachable. `\` is a dedicated key (Shift gives `|`), `:` is Shift+`;`,
   `>` is Shift+`.`.
+- **Some keys exist only as Shift combinations**, and the firmware folds Shift
+  in and reports a *different* key code: Shift+F1..F5 become F6..F10, Shift+Tab
+  is Home, Shift+Del is End, Shift+Esc is Break, Shift+Enter is Insert, and
+  Shift+Up/Down are PgUp/PgDn. For these the driver *hides* the physical Shift
+  from the emulated keyboard for the duration of the keypress — otherwise DOS
+  sees Shift+F7 (BIOS scancode 0x5A) rather than F7 (0x41), and the application
+  never gets the key that was pressed.
 - **Shift is reported *and* folded into the character.** Holding Shift produces a
   Shift event *and* the shifted ASCII, so the driver passes the real Shift
   through. CapsLock instead produces uppercase ASCII with no Shift event, so
@@ -324,7 +331,7 @@ rewritten — the filesystem itself is LBA-linear and does not move.
 |---|---|---|
 | `PICOCALC_BRINGUP` | `ON` | Boot colour-bar self-test, a legible 8x8 debug overlay, and a `KIPS / fps / CS:IP` counter. **Turn OFF for normal use.** The two builds are named differently (`...-PICOCALC-BRINGUP-PWM.uf2` vs `...-PICOCALC-PWM.uf2`) so they cannot be confused. Note this is the *only* diagnostic channel: `printf` on this platform writes to `DEBUG_VRAM`, never to a serial port, so with it OFF a boot failure is a silent black screen. |
 | `PICOCALC_LCD_CLK_VAL` | `75000000` | Panel SPI clock, device-verified. It scales the *transfer* half of a frame only — measured at 16bpp, a frame is ~60% transfer and ~40% scanline unpacking plus audio, so gains are real but sub-linear (24 fps at 50 MHz → 30 fps at 75 MHz, instrumented build). This is **above** the ILI9488 datasheet's nominal 66 MHz serial write cycle; accepted because the failure mode is visible (shearing, noise, dropped pixels) rather than silent. Drop to `50000000` if a panel shows artefacts. Achieved rate is shown as `fps@NNMHz`. |
-| `PICOCALC_SD_CLK_HZ` | `12500000` | SD bus clock. 12.5 MHz matches tiny_agi on this board; the 30 MHz Murmulator default is not reliable here. |
+| `PICOCALC_SD_CLK_HZ` | `30000000` | SD bus clock. Safe by construction: the card is negotiated at 100 kHz and only then switched, so one that cannot sustain the rate fails visibly at mount rather than corrupting data. Drop to `12500000` (tiny_agi's rate) if a card misbehaves. |
 | `PICOCALC_PSRAM_SWEEP` | `OFF` | One-shot measuring build. Sweeps PSRAM over (divisor x fudge), prints a table of SPI rate / errors / throughput, then stops — it does not boot the emulator. Use it to pick `PSRAM_SM_CLOCK_VAL` and `PSRAM_FUDGE_VAL` for a board, then rebuild normally. |
 | `PICOCALC_PSRAM_SOAK` | `OFF` | Soak build. Hammers the *configured* operating point and reports a running error total, so a candidate divisor can be checked over minutes and as the board warms, not just for one 256 KB pass. |
 | `PSRAM_FUDGE_VAL` | `1` | PSRAM PIO program: `1` selects the variant with the extra read-sync cycle, which `psram_spi.pio` documents as required for reads above **83 MHz** SPI. It pairs with the clock and is **not independently tunable** — below 83 MHz the fudge lands wrong and the bus is dead, so lowering `PSRAM_SM_CLOCK_VAL` below 166000000 requires setting this to `0` as well. |
