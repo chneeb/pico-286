@@ -313,7 +313,7 @@ something, e.g. `DOSSHELL` in text mode.
 | Keyboard — CapsLock (synthesised-Shift path) | **not yet verified** |
 | Mouse — Ctrl-Alt-M with CTMOUSE loaded | working (tested in a Sierra SCI game) |
 | Audio (PWM) — AdLib/OPL2 | working |
-| Audio — PC speaker | fixed, **not yet verified**: now routed through the mixer to GP26/27 rather than synthesised on `PWM_BEEPER` (GP28) |
+| Audio — PC speaker | working (routed through the mixer to GP26/27 rather than synthesised on `PWM_BEEPER`/GP28) |
 | Sierra AGI text in message windows | **broken** — see the known issue below; affects all targets, not just PicoCalc |
 
 #### Disk images on the PicoCalc
@@ -370,6 +370,12 @@ through `tga_draw_char()` with the colour hardcoded to 9 (`cpu.c`, the
 8 KB bank interleave — which is wrong for the planar EGA/VGA modes and for CGA,
 so BIOS-written characters do not land as glyphs. AGI draws its window boxes
 itself, which is why the boxes appear and only the text is lost.
+
+The writes are harmless rather than corrupting: `tga_draw_char()` addresses
+`tga_offset + ...` with `tga_offset = 0x8000`, so every glyph byte lands at
+VIDEORAM offset 32768 or above, while EGA mode 0Dh displays offsets 0-8000. The
+characters are written to memory the renderer never reads, which is why the
+boxes come out cleanly empty instead of speckled.
 
 An attempt at a fix (render the glyph pixel by pixel, dispatching on the real
 mode, honouring `BL`) got letters onto the screen but they were **all the same
