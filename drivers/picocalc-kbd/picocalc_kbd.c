@@ -476,6 +476,10 @@ static void handle_event(const uint8_t key, const uint8_t state) {
     }
 }
 
+bool picocalc_mouse_mode(void) {
+    return mouse_mode;
+}
+
 bool picocalc_mouse_step(uint8_t *buttons, int8_t *dx, int8_t *dy) {
     if (!mouse_mode) return false;
 

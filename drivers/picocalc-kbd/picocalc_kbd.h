@@ -73,6 +73,10 @@ void picocalc_kbd_set_backlight(uint8_t level);
 // itself, and derives motion from which arrows are currently held rather than
 // from key events - the I2C poll only drains one event per cycle, so
 // event-driven motion would be lumpy.
+// True while Ctrl-Alt-M mouse mode is active. The keyboard backlight is the
+// other indicator, which is useless if the backlight is turned down.
+bool picocalc_mouse_mode(void);
+
 bool picocalc_mouse_step(uint8_t *buttons, int8_t *dx, int8_t *dy);
 
 #ifdef __cplusplus

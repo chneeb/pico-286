@@ -320,8 +320,16 @@ static void __not_in_flash_func(core1_pump)(void) {
     }
 #endif
 
-    // Audio output at configured sample rate
-    if (tick > last_sound_tick + (1000000 / SOUND_FREQUENCY)) {
+    // Audio output at configured sample rate.
+    //
+    // The period is accumulated rather than re-based off the current time. A
+    // pump that arrives late used to set last_sound_tick = tick, which throws
+    // the missed slot away and permanently shifts the phase - so scheduling
+    // jitter turned directly into sample-rate jitter, and the output ran
+    // steadily slow. Accumulating lets a late sample be followed immediately
+    // by the one it displaced, which is what keeps a tone clean.
+    static const uint32_t sound_period = 1000000 / SOUND_FREQUENCY;
+    if (tick > last_sound_tick + sound_period) {
         int16_t samples[2];
         get_sound_sample(last_dss_sample + last_sb_sample, samples);
 
@@ -331,7 +339,13 @@ static void __not_in_flash_func(core1_pump)(void) {
         pwm_set_gpio_level(PWM_LEFT_CHANNEL, (uint16_t)((int32_t)samples[0] + 0x8000L) >> 4);
         pwm_set_gpio_level(PWM_RIGHT_CHANNEL, (uint16_t)((int32_t)samples[1] + 0x8000L) >> 4);
 #endif
-        last_sound_tick = tick;
+        last_sound_tick += sound_period;
+        // If we fell so far behind that catching up would mean a burst of
+        // back-to-back samples - a mode change, an SD access - give up on the
+        // missed ones and resync. Chasing them would be a fast-forward
+        // artefact, which is worse than the gap.
+        if (tick > last_sound_tick + 8 * sound_period)
+            last_sound_tick = tick;
     }
 }
 
@@ -1148,7 +1162,8 @@ int main(void) {
 #endif
 
 #if PICOCALC_PERF_OVERLAY
-    uint64_t bat_last = time_us_64();
+    uint64_t bat_last = 0;   // 0 so the first reading lands immediately
+    int bat_cached = -1;
     uint64_t perf_last = time_us_64();
     uint64_t perf_instr = 0;
     uint32_t perf_frames0 = picocalc_lcd_frames;
@@ -1191,12 +1206,17 @@ int main(void) {
         // exact encoding varies between PicoCalc keyboard builds; whichever
         // half moves is the one that means something on this board.
         const uint64_t bat_now = time_us_64();
-        if (picocalc_lcd_overlay && bat_now - bat_last >= 30000000) {
+        if ((picocalc_lcd_overlay || picocalc_lcd_statusbar)
+            && bat_now - bat_last >= 30000000) {
             bat_last = bat_now;
-            const int b = picocalc_read_battery();
-            if (b < 0) printf("BAT read failed\n");
-            else printf("BAT %04X lo=%u hi=%u\n",
-                        (unsigned) b, (unsigned) (b & 0xFF), (unsigned) ((b >> 8) & 0xFF));
+            bat_cached = picocalc_read_battery();
+            if (picocalc_lcd_overlay) {
+                if (bat_cached < 0) printf("BAT read failed\n");
+                else printf("BAT %04X lo=%u hi=%u\n",
+                            (unsigned) bat_cached,
+                            (unsigned) (bat_cached & 0xFF),
+                            (unsigned) ((bat_cached >> 8) & 0xFF));
+            }
         }
 
         const uint64_t perf_now = time_us_64();
@@ -1218,9 +1238,21 @@ int main(void) {
                     "1.35", "1.40", "1.50", "1.60"
                 };
                 const int vi = vreg - VREG_VOLTAGE_1_10;
+                // The battery byte: the PicoCalc keyboard MCU returns the
+                // percentage in the high byte, with bit 7 as a charging flag.
+                // That encoding differs between keyboard firmware builds, so
+                // DEBUG_OVERLAY's raw "BAT %04X lo= hi=" line stays available
+                // to check it against - if the percentage here looks wrong,
+                // whichever byte moves as the battery drains is the right one.
+                char bat[12] = "";
+                if (bat_cached >= 0) {
+                    const unsigned pct = (bat_cached >> 8) & 0x7F;
+                    snprintf(bat, sizeof bat, " B%u%%%s", pct,
+                             (bat_cached >> 8) & 0x80 ? "+" : "");
+                }
                 char line[TEXTMODE_COLS + 1];
                 snprintf(line, sizeof line,
-                         "%luMHz %sV PS%lu e%lu LCD%lu %lufps %luK BL%d",
+                         "%luMHz %sV PS%lu e%lu LCD%lu %lufps %luK SB%lu BL%d%s%s",
                          (unsigned long) cpu_mhz,
                          (vi >= 0 && vi < (int) (sizeof volts / sizeof *volts))
                              ? volts[vi] : "?",
@@ -1229,7 +1261,13 @@ int main(void) {
                          (unsigned long) picocalc_lcd_achieved_mhz(),
                          (unsigned long) (frames * 1000000ull / (perf_now - perf_last)),
                          (unsigned long) (instr / (perf_now - perf_last)),
-                         cfg_backlight >= 0 ? cfg_backlight : 255);
+                         // Sound Blaster sample rate in kHz. A game that asks
+                         // for an absurd one is the difference between smooth
+                         // and unplayable, and it is otherwise invisible.
+                         (unsigned long) (1000000ul / timeconst / 1000ul),
+                         cfg_backlight >= 0 ? cfg_backlight : 255,
+                         bat,
+                         picocalc_mouse_mode() ? " MOUSE" : "");
                 picocalc_lcd_set_status(line);
             }
             if (picocalc_lcd_overlay)
