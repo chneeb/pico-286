@@ -132,18 +132,6 @@ else ()
     # Core voltage as the hardware_vreg enum ordinal, NOT volts:
     # 11=1.10 12=1.15 13=1.20 14=1.25 15=1.30 (SDK max) 19=1.60 (upstream default).
     set(PICOCALC_VREG_VAL "19" CACHE STRING "Core voltage, vreg_voltage enum ordinal")
-    # Whether the KIPS/fps heartbeat is COMPILED IN. Whether it is shown is a
-    # runtime decision (config.286's DEBUG_OVERLAY), so this defaults on and
-    # only needs turning off to reclaim the handful of instructions the
-    # instruction counter costs in the emulation loop. It is suppressed for the
-    # trace builds, which would otherwise compete with a trace for the same
-    # 10-row buffer.
-    if (PICOCALC_INT10_DEBUG OR PICOCALC_KBD_DEBUG)
-        set(_picocalc_perf_default OFF)
-    else ()
-        set(_picocalc_perf_default ON)
-    endif ()
-    option(PICOCALC_PERF_OVERLAY "PicoCalc: compile in the KIPS/fps heartbeat" ${_picocalc_perf_default})
     # Device-verified operating point: 198 MHz SM = 99 MHz SPI with the fudge
     # PIO program, soak-tested clean (0 errors, ~5.0 MB/s) on PicoCalc hardware.
     # These two are coupled: psram_spi.pio documents the fudge variant as
@@ -461,7 +449,6 @@ else ()
                 $<$<BOOL:${PICOCALC_KBD_DEBUG}>:PICOCALC_KBD_DEBUG>
                 $<$<BOOL:${PICOCALC_INT10_DEBUG}>:PICOCALC_INT10_DEBUG>
                 DEFAULT_VREG_VOLTAGE=${PICOCALC_VREG_VAL}
-                PICOCALC_PERF_OVERLAY=$<IF:$<BOOL:${PICOCALC_PERF_OVERLAY}>,1,0>
                 PWM_BEEPER=28 PWM_LEFT_CHANNEL=26 PWM_RIGHT_CHANNEL=27
                 CLOCK_PIN=22 PCM_PIN=22
                 # 30 MHz is a Murmulator value. tiny_agi runs the PicoCalc's

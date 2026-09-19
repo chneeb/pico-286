@@ -1149,25 +1149,21 @@ int main(void) {
     // Main emulation loop. The PicoCalc keyboard is polled rather than
     // interrupt-driven (it is an I2C peripheral, not a PS/2 line), so it has
     // to be pumped from here; picocalc_kbd_poll() rate-limits itself.
-// The throughput line shares DEBUG_VRAM with everything else printf() emits,
-// and that buffer is only 10 rows - a 2 s heartbeat scrolls a trace away
-// before it can be read. Off by default for the trace builds (see
-// CMakeLists.txt); -DPICOCALC_PERF_OVERLAY=ON forces it back on.
-#ifndef PICOCALC_PERF_OVERLAY
-#define PICOCALC_PERF_OVERLAY PICOCALC_LCD_SELFTEST
-#endif
-
 #ifdef PICOCALC_INT10_DEBUG
     uint64_t int10_last_dump = time_us_64();
 #endif
 
-#if PICOCALC_PERF_OVERLAY
+    // Throughput accounting. This used to be behind a compile-time option,
+    // which meant a build with it off still honoured STATUSBAR=1 and painted
+    // the bar - but never composed any text for it, so the bar came up as an
+    // empty coloured strip. Whether anything is displayed is a runtime
+    // decision; there is no reason for the handful of instructions that
+    // gather the numbers to be one too.
     uint64_t bat_last = 0;   // 0 so the first reading lands immediately
     int bat_cached = -1;
     uint64_t perf_last = time_us_64();
     uint64_t perf_instr = 0;
     uint32_t perf_frames0 = picocalc_lcd_frames;
-#endif
 
     while (true) {
         // Short emulation slices while scancodes are queued: port 0x60 has no
@@ -1178,9 +1174,7 @@ int main(void) {
         const uint32_t slice = picocalc_kbd_pending() ? 2048 : tormoz;
         exec86(slice);
         picocalc_kbd_pump();
-#if PICOCALC_PERF_OVERLAY
         perf_instr += slice;   // slices vary while scancodes drain
-#endif
         if (delay) sleep_us(delay);
         picocalc_kbd_poll();
 
@@ -1193,7 +1187,6 @@ int main(void) {
                 sermouseevent(mb, mdx, mdy);
         }
 
-#if PICOCALC_PERF_OVERLAY
         // Report throughput every 2 s into the debug overlay. exec86() runs
         // `tormoz` instructions per call, so this is emulated KIPS; on a healthy
         // build it should be in the thousands, and the frame rate tells us
@@ -1282,7 +1275,6 @@ int main(void) {
             perf_instr = 0;
             perf_frames0 = picocalc_lcd_frames;
         }
-#endif
 #ifdef PICOCALC_INT10_DEBUG
         // 3 s is slow enough to read off the panel and fast enough to line a
         // dump up with a keystroke or a menu draw.
