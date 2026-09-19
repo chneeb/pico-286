@@ -687,14 +687,43 @@ fix for anything observed**: the one game suspected of it turned out to request
 
 #### Notes for future work
 
-- **Quad/QPI PSRAM looks possible and is unexplored.** The mainboard schematic
-  routes all four data lines — `GP2 RAM_TX` (SIO0), `GP3 RAM_RX` (SIO1),
-  `GP4 RAM_IO2`, `GP5 RAM_IO3` — plus `GP20 RAM_CS` and `GP21 RAM_SCK`. All three
-  PicoCalc ports on hand (this one, shapones, freesci-archive) drive it as
-  single-bit SPI over two wires, which caps a byte access at 40 bits on the wire.
-  QPI would cut the address and data phases by four. It needs a new PIO program
-  and the QPI enable/exit sequence, and GP4/GP5 must not be used for anything
-  else (shapones disables its Nunchuck support for exactly this reason).
+- **Quad/QPI PSRAM looks possible and is unexplored.** The part is an
+  **ESP-PSRAM64H** (64 Mbit, which matches the 8 MB the driver reports) and all
+  four data lines are routed. Per the ClockworkPi *Mainboard V2.0 Schematic*,
+  the nets land on the pins the SOP-8 pinout specifies:
+
+  | Pico | Net | Chip pin | Function |
+  |---|---|---|---|
+  | GP2 | `RAM_TX` | 5 | SI / SIO0 |
+  | GP3 | `RAM_RX` | 2 | SO / SIO1 |
+  | GP4 | `RAM_IO2` | 3 | SIO2 |
+  | GP5 | `RAM_IO3` | 7 | SIO3 |
+  | GP20 | `RAM_CS` | 1 | CE# |
+  | GP21 | `RAM_SCK` | 6 | SCLK |
+
+  Every PicoCalc port on hand (this one, shapones, freesci-archive) nonetheless
+  drives it as single-bit SPI over two wires, which caps a 32-bit access at
+  8 + 24 + 8 + 32 = 72 cycles. QPI does the same in 2 + 6 + 6 + 8 = 22, so at
+  the 99 MHz operating point the ceiling moves from ~5.5 MB/s to ~18 MB/s. The
+  measured single-bit figure is 5.0 MB/s, close enough to trust the model.
+
+  It needs a new PIO program, the QPI enter/exit sequence (`0x35` / `0xF5`),
+  the quad opcodes (`EBh` read, `38h` write) with a clock-dependent dummy-cycle
+  count, and GP4/GP5 kept free — they are unassigned in this build, and
+  shapones disables its Nunchuck support for exactly this reason.
+
+  **Verify the wiring before building the driver.** A schematic proves intent,
+  not that a given board is sound, and those two lines have never been driven,
+  so a defect there would be invisible today. Entering QPI mode and issuing
+  Read ID (`0x9Fh`) is a short PIO program that touches nothing in the memory
+  path: a correct ID returned over four lines proves the connection end to end.
+
+  `PICOCALC_PSRAM_SOAK` is then the right validator for the driver itself,
+  unchanged — it already reports both throughput and an error count, which
+  together separate the three outcomes: ~5 MB/s with no errors means QPI never
+  engaged (the dangerous case, since a correctness-only test would pass it),
+  ~18 MB/s with errors means the extra lines are not working, and ~18 MB/s
+  clean means it works.
 - **Measured PSRAM operating points on PicoCalc hardware** (396 MHz system clock,
   random 32-bit accesses — not bulk DMA, so these are lower than a sequential
   figure):
