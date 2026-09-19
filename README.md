@@ -278,6 +278,25 @@ only as *hardware* — a Microsoft serial mouse on COM1 (`sermouseevent()`). The
 is no `INT 33h` in the emulator, so **a DOS mouse driver must be loaded** (e.g.
 FreeDOS's CTMOUSE, ~7 KB) for software to see a mouse at all.
 
+The serial mouse is emulated **unconditionally** — COM1 is always bound and the
+UART always answers, so a driver can detect the mouse whatever mouse mode is
+set to. Ctrl-Alt-M only decides whether the arrow keys move a pointer or type.
+
+That was not true until three bugs in `src/emulator/mouse.c` were fixed, which
+between them made CTMOUSE load only after mouse mode had been toggled:
+
+- The reset that emits the `'M'` identification triggered on **DTR only**
+  (bit 0 of the modem control register). CTMOUSE pulses **RTS** (bit 1), so it
+  never saw an identification byte. Either line now triggers it.
+- Reading a data byte did `registers[4] = ~registers[4] & 1`, overwriting the
+  modem control register with the inverse of its own bit 0 and destroying both
+  DTR and RTS. No 8250 behaves that way, and it made "has the line been
+  toggled?" depend on how many bytes had been read since.
+- The line status register computed the right answer and then returned a
+  hardcoded `0x1` — permanently "data ready". A driver polling it never stopped
+  reading and, once the buffer drained, went on consuming the stale byte at its
+  head, turning a clean six-byte identification into an endless junk stream.
+
 With a driver loaded, **Ctrl-Alt-M** toggles mouse mode:
 
 | | |
@@ -311,8 +330,10 @@ something, e.g. `DOSSHELL` in text mode.
 | Keyboard — letters, Shift, shifted symbols, arrows, Ctrl-Alt-Del | working |
 | Keyboard — F6-F10 and the other Shift-combined keys | working |
 | Keyboard — CapsLock (synthesised-Shift path) | **not yet verified** |
-| Mouse — Ctrl-Alt-M with CTMOUSE loaded | working (tested in a Sierra SCI game) |
-| Audio (PWM) — AdLib/OPL2 | working |
+| Mouse — CTMOUSE loads without Ctrl-Alt-M being touched | working |
+| Mouse — Ctrl-Alt-M pointer control | working (tested in a Sierra SCI game) |
+| VGA 256-colour palette, including save/restore fades | working |
+| Audio (PWM) — AdLib/OPL2 | working, but stutters — see the known issue below |
 | Audio — PC speaker | working (routed through the mixer to GP26/27 rather than synthesised on `PWM_BEEPER`/GP28) |
 | Sierra AGI message/dialog text | working |
 | Sierra AGI status bar fill and text clearing | working |
@@ -474,7 +495,7 @@ line, applied **in file order** — so when lowering both, put `CPU` before
 | `BACKLIGHT` | Panel backlight, 0–255. Applied after `keyboard_init()`, which owns it. |
 | `KBD_BACKLIGHT` | Keyboard backlight, 0–255. |
 | `LCD_MHZ` | Panel bit rate, 10–120. No exact-divider constraint unlike PSRAM — a fractional PIO divider here costs jitter, not correctness — and it fails visibly (shearing, noise) rather than by corrupting, so it is clamped rather than refused. |
-| `STATUSBAR` | `1` shows a permanent stats bar across the top: clock, core voltage, PSRAM rate and error count, panel clock, fps, KIPS, backlight. It sits in the letterbox margin every mode leaves (40 rows in the worst case), so it costs no picture area. Rates are read back from the PIO dividers, not echoed from what was requested. |
+| `STATUSBAR` | `1` shows a permanent stats bar across the top: clock, core voltage, PSRAM rate and error count, panel clock, fps, KIPS, Sound Blaster rate in kHz, backlight, battery, and `MOUSE` while Ctrl-Alt-M mode is active. It sits in the letterbox margin every mode leaves (40 rows in the worst case), so it costs no picture area. Rates are read back from the PIO dividers, not echoed from what was requested. |
 | `DEBUG_OVERLAY` | `1` paints `printf()` output over the bottom 80 rows, and enables the throughput line. This *does* cover picture. |
 | `PSRAM_SPI` | PSRAM **SPI bit rate** in MHz — the number the sweep build prints, half the state-machine clock. Ignored, with a message, unless it divides the system clock exactly. |
 | `PSRAM_FUDGE` | `0` or `1`; pairs with the rate, see `PSRAM_FUDGE_VAL`. |
@@ -589,6 +610,56 @@ loudly if the divider is not exact:
 PSRAM 75 MHz SPI fudge 0
 ** PSRAM DIVIDER NOT EXACT - EXPECT CORRUPTION **
 ```
+
+#### Known issue: PWM audio stutters
+
+PWM output is **unbuffered**. `core1_pump()` writes each sample straight to the
+PWM comparator:
+
+```c
+if (tick > last_sound_tick + sound_period) {
+    get_sound_sample(...);
+    pwm_set_gpio_level(PWM_LEFT_CHANNEL, ...);
+}
+```
+
+There is no DMA, no FIFO and no ring buffer, so the sample rate is enforced
+purely by how often core1 gets round to calling it. At 44.1 kHz that is every
+22.7 us, and any stretch of core1 work longer than that is an audible defect.
+It is therefore worse the lower the CPU clock is, since the panel clock — and
+so the DMA-wait time during which pumping is dense — does not change, while
+everything else on core1 takes proportionally longer.
+
+Two things have been done about it, and they reduce the problem without
+removing it:
+
+- Every busy-wait in the display driver now calls `lcd_yield()`, including
+  `graphics_set_mode()`'s margin repaints and the `pcalc_lcd_wait_idle()` PIO
+  drains in `start_pixels()`/`stop_pixels()`. A mode change is exactly what
+  happens at the start of a game's intro.
+- The sample clock accumulates (`last_sound_tick += period`) instead of
+  re-basing on the current time, so a late pump no longer discards the slot it
+  missed and permanently shifts the phase. It resyncs if it falls more than
+  eight periods behind, because catching up further would be a fast-forward
+  artefact.
+
+**The actual fix is a ring buffer with timer-paced DMA**, which would make
+audio timing independent of core1 scheduling. One thing makes that easier than
+it looks: `PWM_LEFT_CHANNEL` (GP26) and `PWM_RIGHT_CHANNEL` (GP27) are channels
+A and B of the *same* PWM slice, so both levels live in one 32-bit `cc`
+register and a single DMA channel writing 32-bit words drives both. The catch
+is that DMA pacing timers divide `clk_sys`, so the rate has to be derived at
+init and re-derived whenever the clock changes — the same trap as the PSRAM and
+panel dividers.
+
+Unrelated but in the same area: the Sound Blaster sample rate is now clamped to
+the mixer's output rate. `timeconst = 256 - command_byte` can be as low as 1,
+and `core1_pump()` uses it directly as a microsecond period — a 1 MHz sampling
+rate, each sample walking a DMA buffer that lives in PSRAM, from core1, against
+core0 doing the same for every guest memory access. Nothing is gained above the
+output rate since the extra samples are discarded. **This is insurance, not a
+fix for anything observed**: the one game suspected of it turned out to request
+45 kHz, and the clamp has never been seen to fire.
 
 #### Notes for future work
 
