@@ -215,6 +215,11 @@ extern uint32_t tga_offset;
 // CPU
 extern void exec86(uint32_t execloops);
 
+#ifdef PICOCALC_INT10_DEBUG
+// Print, and reset, the per-function int 10h call counts since the last call.
+extern void int10_debug_dump(void);
+#endif
+
 extern void reset86();
 
 // i8253
@@ -227,6 +232,9 @@ extern void sermouseevent(uint8_t buttons, int8_t xrel, int8_t yrel);
 // the glyph's background in colour 0 as the IBM BIOS does; AH=0Ah, documented as
 // not changing the attribute, leaves it alone.
 extern void bios_draw_char_gfx(uint8_t ch, int col, int row, uint8_t attr, bool opaque);
+extern void bios_scroll_gfx(uint8_t lines, uint8_t attr,
+                            uint8_t top_row, uint8_t left_col,
+                            uint8_t bot_row, uint8_t right_col, bool down);
 
 extern uint8_t mouse_portin(uint16_t portnum);
 

@@ -127,6 +127,18 @@ else ()
     # perf counter, so the 10-line overlay is entirely key traffic. Implies the
     # bring-up overlay, since that is what renders it.
     option(PICOCALC_KBD_DEBUG "PicoCalc: raw keyboard event logging" OFF)
+    option(PICOCALC_INT10_DEBUG "PicoCalc: log int 10h calls the emulator does not handle" OFF)
+    # The KIPS/fps heartbeat and a trace compete for the same 10-row debug
+    # buffer, so it defaults off whenever a trace build is selected. An
+    # explicit -DPICOCALC_PERF_OVERLAY=ON on the command line still wins.
+    # It is only ever visible when the overlay is painted at all, i.e. in a
+    # bring-up build, so that - minus the trace builds - is the default.
+    if (PICOCALC_BRINGUP AND NOT PICOCALC_INT10_DEBUG AND NOT PICOCALC_KBD_DEBUG)
+        set(_picocalc_perf_default ON)
+    else ()
+        set(_picocalc_perf_default OFF)
+    endif ()
+    option(PICOCALC_PERF_OVERLAY "PicoCalc: KIPS/fps heartbeat in the debug overlay" ${_picocalc_perf_default})
     # Device-verified operating point: 198 MHz SM = 99 MHz SPI with the fudge
     # PIO program, soak-tested clean (0 errors, ~5.0 MB/s) on PicoCalc hardware.
     # These two are coupled: psram_spi.pio documents the fudge variant as
@@ -235,7 +247,9 @@ else ()
         # Distinct output name: the bring-up and normal builds are otherwise
         # byte-for-byte indistinguishable by filename, and flashing the wrong
         # one looks like the option did nothing.
-        if (PICOCALC_KBD_DEBUG)
+        if (PICOCALC_INT10_DEBUG)
+            set(BUILD_NAME "${BUILD_NAME}-INT10DEBUG")
+        elseif (PICOCALC_KBD_DEBUG)
             set(BUILD_NAME "${BUILD_NAME}-KBDDEBUG")
         elseif (PICOCALC_PSRAM_SWEEP)
             set(BUILD_NAME "${BUILD_NAME}-PSRAMSWEEP")
@@ -421,12 +435,14 @@ else ()
                 $<$<BOOL:${PICOCALC_PSRAM_SWEEP}>:PICOCALC_PSRAM_SWEEP>
                 $<$<BOOL:${PICOCALC_PSRAM_SOAK}>:PICOCALC_PSRAM_SOAK>
                 $<$<BOOL:${PICOCALC_KBD_DEBUG}>:PICOCALC_KBD_DEBUG>
+                $<$<BOOL:${PICOCALC_INT10_DEBUG}>:PICOCALC_INT10_DEBUG>
+                PICOCALC_PERF_OVERLAY=$<IF:$<BOOL:${PICOCALC_PERF_OVERLAY}>,1,0>
                 PWM_BEEPER=28 PWM_LEFT_CHANNEL=26 PWM_RIGHT_CHANNEL=27
                 CLOCK_PIN=22 PCM_PIN=22
                 # 30 MHz is a Murmulator value. tiny_agi runs the PicoCalc's
                 # card at 12.5 MHz; shapones never exceeds 250 kHz.
                 SDCARD_CLK_FAST_HZ=${PICOCALC_SD_CLK_HZ}
-                PICOCALC_LCD_SELFTEST=$<IF:$<OR:$<BOOL:${PICOCALC_BRINGUP}>,$<BOOL:${PICOCALC_KBD_DEBUG}>>,1,0>
+                PICOCALC_LCD_SELFTEST=$<IF:$<OR:$<BOOL:${PICOCALC_BRINGUP}>,$<BOOL:${PICOCALC_KBD_DEBUG}>,$<BOOL:${PICOCALC_INT10_DEBUG}>>,1,0>
         )
     elseif (MURM20)
         target_compile_definitions(${PROJECT_NAME} PRIVATE

@@ -315,7 +315,7 @@ something, e.g. `DOSSHELL` in text mode.
 | Audio (PWM) — AdLib/OPL2 | working |
 | Audio — PC speaker | working (routed through the mixer to GP26/27 rather than synthesised on `PWM_BEEPER`/GP28) |
 | Sierra AGI message/dialog text | working |
-| Sierra AGI status bar fill and text clearing | **broken** — see the known issue below; affects all targets |
+| Sierra AGI status bar fill and text clearing | working |
 
 #### Disk images on the PicoCalc
 
@@ -343,6 +343,8 @@ rewritten — the filesystem itself is LBA-linear and does not move.
 | `PICOCALC_BRINGUP` | `ON` | Boot colour-bar self-test, a legible 8x8 debug overlay, and a `KIPS / fps / CS:IP` counter. **Turn OFF for normal use.** The two builds are named differently (`...-PICOCALC-BRINGUP-PWM.uf2` vs `...-PICOCALC-PWM.uf2`) so they cannot be confused. Note this is the *only* diagnostic channel: `printf` on this platform writes to `DEBUG_VRAM`, never to a serial port, so with it OFF a boot failure is a silent black screen. |
 | `PICOCALC_LCD_CLK_VAL` | `75000000` | Panel SPI clock, device-verified. It scales the *transfer* half of a frame only — measured at 16bpp, a frame is ~60% transfer and ~40% scanline unpacking plus audio, so gains are real but sub-linear (24 fps at 50 MHz → 30 fps at 75 MHz, instrumented build). This is **above** the ILI9488 datasheet's nominal 66 MHz serial write cycle; accepted because the failure mode is visible (shearing, noise, dropped pixels) rather than silent. Drop to `50000000` if a panel shows artefacts. Achieved rate is shown as `fps@NNMHz`. |
 | `PICOCALC_SD_CLK_HZ` | `30000000` | SD bus clock. Safe by construction: the card is negotiated at 100 kHz and only then switched, so one that cannot sustain the rate fails visibly at mount rather than corrupting data. Drop to `12500000` (tiny_agi's rate) if a card misbehaves. |
+| `PICOCALC_INT10_DEBUG` | `OFF` | Print per-function `int 10h` call counts (deltas, every 3 s) to the debug overlay, marking each as implemented here or passed to the ROM BIOS. For finding BIOS video calls a guest uses that this emulator does not implement. |
+| `PICOCALC_PERF_OVERLAY` | on for `PICOCALC_BRINGUP`, else off | The KIPS/fps heartbeat in the debug overlay. Defaults off for the trace builds, which otherwise compete with it for the same 10-row buffer. |
 | `PICOCALC_PSRAM_SWEEP` | `OFF` | One-shot measuring build. Sweeps PSRAM over (divisor x fudge), prints a table of SPI rate / errors / throughput, then stops — it does not boot the emulator. Use it to pick `PSRAM_SM_CLOCK_VAL` and `PSRAM_FUDGE_VAL` for a board, then rebuild normally. |
 | `PICOCALC_PSRAM_SOAK` | `OFF` | Soak build. Hammers the *configured* operating point and reports a running error total, so a candidate divisor can be checked over minutes and as the board warms, not just for one 256 KB pass. |
 | `PSRAM_FUDGE_VAL` | `1` | PSRAM PIO program: `1` selects the variant with the extra read-sync cycle, which `psram_spi.pio` documents as required for reads above **83 MHz** SPI. It pairs with the clock and is **not independently tunable** — below 83 MHz the fudge lands wrong and the bus is dead, so lowering `PSRAM_SM_CLOCK_VAL` below 166000000 requires setting this to `0` as well. |
@@ -360,35 +362,45 @@ configured, the option did not apply — check it landed with:
 grep -o "PSRAM_SM_CLOCK_HZ=[0-9]*" build.ninja
 ```
 
-#### Known issue: AGI status bar and input line
+#### Resolved: AGI text, status bar and input line
 
-**Fixed:** Sierra AGI message-window and dialog text now renders. `int 10h
-AH=09/0Ah` used to route every graphics mode through `tga_draw_char()` with the
-colour hardcoded to 9, writing the Tandy layout (4-bit nibbles based at
-`tga_offset` = 0x8000). CGA reads from 0x8000 too, so text landed in the visible
-region at the wrong bit depth — the colour-fringed look; EGA 0Dh reads offsets
-0–8000, so text was written to memory the renderer never reads and vanished.
-Characters 128–255 also need the guest's own font via the **INT 1Fh** vector,
-which AGI installs — and that font is MSB-first while this project's built-in
+Three separate bugs in the BIOS graphics-mode video calls, all of which showed
+up together in Sierra's AGI interpreter.
+
+**Character output.** `int 10h AH=09/0Ah` used to route every graphics mode
+through `tga_draw_char()` with the colour hardcoded to 9, writing the Tandy
+layout (4-bit nibbles based at `tga_offset` = 0x8000). CGA reads from 0x8000
+too, so text landed in the visible region at the wrong bit depth — the
+colour-fringed look; EGA 0Dh reads offsets 0–8000, so text was written to memory
+the renderer never reads and vanished. Now dispatched per video mode.
+
+**The guest font.** Characters 128–255 come from the font at the **INT 1Fh**
+vector, which AGI installs. That font is MSB-first while this project's built-in
 `font_8x8` is LSB-first, so rendering both the same way mirrored every glyph.
 
-**Still broken:** the status bar is black except behind its text, and typed
-commands and messages are never cleared.
+**The background fill.** `AH=06h/07h` (scroll window up/down) had no
+graphics-mode implementation at all — the call fell out of `intcall86()`'s
+switch to the ROM BIOS, which knows only the CGA layout at B800 and does nothing
+visible in a planar EGA mode at A000. AGI paints its status bar by blanking row
+0 with `AL=0, BH=0xFF` and then drawing the glyphs into video memory itself, and
+it clears the input line and messages the same way. That is why the bar was
+black *except* behind its text, why typed commands never cleared, and why a
+trace of `AH=09/0Ah` found no row-0 traffic and sent the first investigation
+down the wrong path: none of it involves a character. `bios_scroll_gfx()` in
+`src/emulator/video/vga.c` implements both the blank and a real scroll, against
+the same per-mode pixel writer the character path uses.
 
-These are **not** BIOS character output. A trace of every `AH=09/0Ah` call with
-its target cell shows **no row-0 traffic at all**, and none for the input line —
-AGI draws both by writing video memory directly. Two attempts to fix them
-through this call (honouring the attribute's high nibble as a background colour,
-and honouring `CX`) had no observable effect, which is the evidence for that
-conclusion. The attribute-background change was reverted as unsupported; `CX` is
-kept because a repeat count is documented behaviour that was simply missing,
-though nothing here exercises it.
+One detail is a judgement call. `BH` is documented as a text attribute, whose
+visible blank colour would be the **high** nibble; the low nibble is used here
+because AGI passes `0xFF` rather than `0xF0`, which reads as a raw pixel fill.
+Both give white, so this case cannot distinguish them. The tell if it is wrong
+would be a DOS `BH=0x07` clear coming out grey instead of black.
 
-The investigation therefore belongs in the EGA planar write path —
-`vga_mem_write()` and the graphics-controller registers (bit mask, map mask,
-set/reset) — not in `int 10h`. Worth knowing that AGI's dialog *boxes* and the
-game graphics render correctly, so whatever is missing is specific to how it
-fills and clears those two areas.
+Tracing this needs `-DPICOCALC_INT10_DEBUG=ON`, which prints per-function
+`int 10h` call counts as deltas every 3 s into the debug overlay, marking each
+AH as implemented here (`*`) or handed to the ROM BIOS (`x`). Counts as deltas
+rather than a one-shot "first seen" log is the point: a call made on every
+repaint and a call made once at startup are indistinguishable in the latter.
 
 #### Notes for future work
 

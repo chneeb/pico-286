@@ -1024,7 +1024,19 @@ int main(void) {
     // Main emulation loop. The PicoCalc keyboard is polled rather than
     // interrupt-driven (it is an I2C peripheral, not a PS/2 line), so it has
     // to be pumped from here; picocalc_kbd_poll() rate-limits itself.
-#if PICOCALC_LCD_SELFTEST && !defined(PICOCALC_KBD_DEBUG)
+// The throughput line shares DEBUG_VRAM with everything else printf() emits,
+// and that buffer is only 10 rows - a 2 s heartbeat scrolls a trace away
+// before it can be read. Off by default for the trace builds (see
+// CMakeLists.txt); -DPICOCALC_PERF_OVERLAY=ON forces it back on.
+#ifndef PICOCALC_PERF_OVERLAY
+#define PICOCALC_PERF_OVERLAY PICOCALC_LCD_SELFTEST
+#endif
+
+#ifdef PICOCALC_INT10_DEBUG
+    uint64_t int10_last_dump = time_us_64();
+#endif
+
+#if PICOCALC_PERF_OVERLAY
     uint64_t perf_last = time_us_64();
     uint64_t perf_instr = 0;
     uint32_t perf_frames0 = picocalc_lcd_frames;
@@ -1039,7 +1051,7 @@ int main(void) {
         const uint32_t slice = picocalc_kbd_pending() ? 2048 : tormoz;
         exec86(slice);
         picocalc_kbd_pump();
-#if PICOCALC_LCD_SELFTEST && !defined(PICOCALC_KBD_DEBUG)
+#if PICOCALC_PERF_OVERLAY
         perf_instr += slice;   // slices vary while scancodes drain
 #endif
         if (delay) sleep_us(delay);
@@ -1054,7 +1066,7 @@ int main(void) {
                 sermouseevent(mb, mdx, mdy);
         }
 
-#if PICOCALC_LCD_SELFTEST && !defined(PICOCALC_KBD_DEBUG)
+#if PICOCALC_PERF_OVERLAY
         // Report throughput every 2 s into the debug overlay. exec86() runs
         // `tormoz` instructions per call, so this is emulated KIPS; on a healthy
         // build it should be in the thousands, and the frame rate tells us
@@ -1077,6 +1089,17 @@ int main(void) {
             perf_last = perf_now;
             perf_instr = 0;
             perf_frames0 = picocalc_lcd_frames;
+        }
+#endif
+#ifdef PICOCALC_INT10_DEBUG
+        // 3 s is slow enough to read off the panel and fast enough to line a
+        // dump up with a keystroke or a menu draw.
+        {
+            const uint64_t now = time_us_64();
+            if (now - int10_last_dump >= 3000000) {
+                int10_last_dump = now;
+                int10_debug_dump();
+            }
         }
 #endif
         tight_loop_contents();

@@ -670,6 +670,147 @@ static void gfx_putpixel(const int x, const int y, const uint8_t color) {
     }
 }
 
+// Mirror of gfx_putpixel(), needed because a scroll has to move pixels that are
+// already on screen. Returns 0 outside the visible area, so a window clamped to
+// the mode scrolls in background rather than garbage.
+static uint8_t gfx_getpixel(const int x, const int y) {
+    if (x < 0 || y < 0) return 0;
+    switch (videomode) {
+        case 0x04:   // CGA 320x200x4
+        case 0x05: { // CGA 320x200x4 mono
+            if (x >= 320 || y >= 200) return 0;
+            const uint32_t off = 0x8000 + (vram_offset << 1)
+                               + __fast_mul(y >> 1, 80) + ((y & 1) << 13) + (x >> 2);
+            if (off >= VIDEORAM_SIZE) return 0;
+            return (VIDEORAM[off] >> (6 - ((x & 3) << 1))) & 3u;
+        }
+        case 0x06: { // CGA 640x200x2
+            if (x >= 640 || y >= 200) return 0;
+            const uint32_t off = 0x8000 + (vram_offset << 1)
+                               + __fast_mul(y >> 1, 80) + ((y & 1) << 13) + (x >> 3);
+            if (off >= VIDEORAM_SIZE) return 0;
+            return (VIDEORAM[off] >> (7 - (x & 7))) & 1u;
+        }
+        case 0x0D: { // EGA 320x200x16, planar
+            if (x >= 320 || y >= 200) return 0;
+            const uint32_t off = __fast_mul(y, 40) + (x >> 3);
+            if (off >= VIDEORAM_SIZE) return 0;
+            const uint8_t bit = 7 - (x & 7);
+            uint8_t c = 0;
+            for (int p = 0; p < 4; p++)
+                c |= (uint8_t) (((VIDEORAM[off] >> (bit + 8 * p)) & 1u) << p);
+            return c;
+        }
+        case 0x0E:   // EGA 640x200x16
+        case 0x10:   // EGA 640x350x16
+        case 0x12: { // VGA 640x480x16
+            if (x >= 640 || y >= 480) return 0;
+            const uint32_t off = __fast_mul(y, 80) + (x >> 3);
+            if (off >= VIDEORAM_SIZE) return 0;
+            const uint8_t bit = 7 - (x & 7);
+            uint8_t c = 0;
+            for (int p = 0; p < 4; p++)
+                c |= (uint8_t) (((VIDEORAM[off] >> (bit + 8 * p)) & 1u) << p);
+            return c;
+        }
+        case 0x11: { // VGA 640x480x2
+            if (x >= 640 || y >= 480) return 0;
+            const uint32_t off = __fast_mul(y, 80) + (x >> 3);
+            if (off >= VIDEORAM_SIZE) return 0;
+            return (VIDEORAM[off] >> (7 - (x & 7))) & 1u;
+        }
+        case 0x13:   // VGA 320x200x256, linear
+        case 0xFF: { // ...and its planar variant
+            if (x >= 320 || y >= 200) return 0;
+            const uint32_t off = __fast_mul(y, 320) + x;
+            if (off >= VIDEORAM_SIZE) return 0;
+            return VIDEORAM[off] & 0xFFu;
+        }
+        default: {   // Tandy
+            if (x >= 640 || y >= 200) return 0;
+            const uint32_t off = tga_offset + (x >> 1) + ((y >> 2) << 13);
+            if (off >= VIDEORAM_SIZE) return 0;
+            return (x & 1) ? (VIDEORAM[off] & 0x0Fu) : ((VIDEORAM[off] >> 4) & 0x0Fu);
+        }
+    }
+}
+
+// Visible extent of the current mode, so a scroll window can be clamped to it.
+static void gfx_mode_dims(int *w, int *h) {
+    switch (videomode) {
+        case 0x06: *w = 640; *h = 200; break;
+        case 0x0E: *w = 640; *h = 200; break;
+        case 0x10: *w = 640; *h = 350; break;
+        case 0x11:
+        case 0x12: *w = 640; *h = 480; break;
+        default:   *w = 320; *h = 200; break;
+    }
+}
+
+// int 10h AH=06h/07h - scroll a window of character cells up or down, filling
+// the vacated rows with the attribute in BH. With AL=0 the whole window is
+// blanked instead, which is how software paints a solid rectangle without
+// writing a single character.
+//
+// The ROM BIOS handles this for text modes. The graphics modes reached no
+// implementation at all: the call fell out of intcall86()'s switch to the ROM
+// BIOS, which knows only the CGA layout at B800 and so does nothing visible in
+// a planar EGA mode at A000. That is why Sierra's AGI interpreter drew no
+// status bar - it paints it by blanking row 0 with BH=0xFF - and why typed
+// commands and messages never cleared. None of it involves a character, which
+// is also why tracing AH=09h/0Ah showed nothing.
+//
+// Attribute-to-colour follows bios_draw_char_gfx(): the whole byte is a colour
+// index in mode 13h, otherwise the low nibble selects one of 16.
+//
+// BH is documented as a text attribute, whose *visible* blank colour would be
+// the high nibble. Both readings give white for the BH=0xFF that AGI passes, so
+// this case cannot distinguish them; the low nibble is taken because passing
+// 0xFF rather than 0xF0 says the caller meant a raw pixel fill, not an
+// attribute pair. If some program ever blanks to the wrong colour here - a DOS
+// BH=0x07 clear coming out grey instead of black would be the tell - the
+// alternative is attr >> 4.
+void bios_scroll_gfx(const uint8_t lines, const uint8_t attr,
+                     const uint8_t top_row, const uint8_t left_col,
+                     const uint8_t bot_row, const uint8_t right_col,
+                     const bool down) {
+    int w, h;
+    gfx_mode_dims(&w, &h);
+
+    int x0 = left_col << 3, x1 = (right_col << 3) + 7;
+    int y0 = top_row << 3, y1 = (bot_row << 3) + 7;
+    if (x1 > w - 1) x1 = w - 1;
+    if (y1 > h - 1) y1 = h - 1;
+    if (x0 > x1 || y0 > y1) return;
+
+    const uint8_t color = videomode == 0x13 ? attr : (attr & 0x0F);
+    const int shift = lines << 3;   // a text row is 8 scanlines in every mode here
+
+    // AL=0, or a scroll at least as tall as the window, means "blank it".
+    if (lines == 0 || shift > y1 - y0) {
+        for (int y = y0; y <= y1; y++)
+            for (int x = x0; x <= x1; x++)
+                gfx_putpixel(x, y, color);
+        return;
+    }
+
+    if (down) {
+        for (int y = y1; y >= y0 + shift; y--)
+            for (int x = x0; x <= x1; x++)
+                gfx_putpixel(x, y, gfx_getpixel(x, y - shift));
+        for (int y = y0; y < y0 + shift; y++)
+            for (int x = x0; x <= x1; x++)
+                gfx_putpixel(x, y, color);
+    } else {
+        for (int y = y0; y <= y1 - shift; y++)
+            for (int x = x0; x <= x1; x++)
+                gfx_putpixel(x, y, gfx_getpixel(x, y + shift));
+        for (int y = y1 - shift + 1; y <= y1; y++)
+            for (int x = x0; x <= x1; x++)
+                gfx_putpixel(x, y, color);
+    }
+}
+
 // Characters 128-255 come from the user font pointed to by INT 1Fh, which is how
 // software supplies its own high-half glyphs - Sierra's AGI interpreter installs
 // one and draws its text and window borders from it, with the high bit set.

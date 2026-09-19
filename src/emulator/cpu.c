@@ -473,10 +473,83 @@ static INLINE void decodeflagsword(uint16_t x) {
     x86_flags.value = x;
 }
 
+#ifdef PICOCALC_INT10_DEBUG
+uint16_t int10_calls[256];
+uint32_t int10_last_scroll;   // AH, AL, BH, videomode
+uint32_t int10_last_window;   // CH, CL, DH, DL
+
+void int10_debug_dump(void) {
+    char line[41];
+    int n = 0;
+    bool any = false;
+
+    // AH values the emulator implements itself are marked '*'; the rest are
+    // handed to the ROM BIOS, which has no idea about the planar EGA layout.
+    for (int ah = 0; ah < 256; ah++) {
+        if (!int10_calls[ah]) continue;
+        const bool handled = ah == 0x00 || ah == 0x05 || ah == 0x06 || ah == 0x07 ||
+                             ah == 0x09 || ah == 0x0a ||
+                             ah == 0x0f || ah == 0x10 || ah == 0x12 || ah == 0x1a;
+        char item[16];
+        const int len = snprintf(item, sizeof item, "%02X%c%u ",
+                                 ah, handled ? '*' : 'x', int10_calls[ah]);
+        if (n + len >= (int) sizeof line) {
+            line[n] = 0;
+            printf("%s\n", line);
+            n = 0;
+        }
+        memcpy(line + n, item, len);
+        n += len;
+        any = true;
+        int10_calls[ah] = 0;
+    }
+    if (n) {
+        line[n] = 0;
+        printf("%s\n", line);
+    }
+    if (int10_last_scroll) {
+        printf("scr %02X L=%02X BH=%02X M%02X %02X%02X-%02X%02X\n",
+               (unsigned) (int10_last_scroll >> 24), (unsigned) (int10_last_scroll >> 16 & 0xFF),
+               (unsigned) (int10_last_scroll >> 8 & 0xFF), (unsigned) (int10_last_scroll & 0xFF),
+               (unsigned) (int10_last_window >> 24), (unsigned) (int10_last_window >> 16 & 0xFF),
+               (unsigned) (int10_last_window >> 8 & 0xFF), (unsigned) (int10_last_window & 0xFF));
+        int10_last_scroll = 0;
+    }
+    if (!any) printf("int10 idle\n");
+}
+#endif
+
 void intcall86(uint8_t intnum) {
     switch (intnum) {
         case 0x10: {
+#ifdef PICOCALC_INT10_DEBUG
+            // Count every int 10h function the guest uses and report the
+            // counts as deltas, so the numbers can be read against what is
+            // happening on screen: draw the status bar, type a command, and
+            // whatever increments is the call doing the work. A one-shot
+            // "first seen" log cannot show that - a call made constantly and a
+            // call made once at startup look identical in it.
+            int10_calls[CPU_AH]++;
+            if (CPU_AH == 0x06 || CPU_AH == 0x07) {
+                int10_last_scroll = ((uint32_t) CPU_AH << 24) | ((uint32_t) CPU_AL << 16) |
+                                    ((uint32_t) CPU_BH << 8) | videomode;
+                int10_last_window = ((uint32_t) CPU_CH << 24) | ((uint32_t) CPU_CL << 16) |
+                                    ((uint32_t) CPU_DH << 8) | CPU_DL;
+            }
+#endif
             switch (CPU_AH) {
+                case 0x06:   // scroll window up
+                case 0x07: { // scroll window down
+                    // Text modes keep falling through to the ROM BIOS, which
+                    // already does this correctly for B800.
+                    if (videomode >= 4 && videomode != 7) {
+                        bios_scroll_gfx(CPU_AL, CPU_BH,
+                                        CPU_CH, CPU_CL, CPU_DH, CPU_DL,
+                                        CPU_AH == 0x07);
+                        return;
+                    }
+                    break;
+                }
                 case 0x09:
                 case 0x0a:
                     // Graphics modes: render the glyph ourselves, honouring the
