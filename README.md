@@ -482,6 +482,78 @@ line, applied **in file order** — so when lowering both, put `CPU` before
 | `FLASH_T`, `PSRAM_T` | Raw QMI timing registers, hex. |
 | `PSRAM` | QMI-attached PSRAM rate — **does nothing on the PicoCalc**, which has no QMI PSRAM and uses the PIO driver. Use `PSRAM_SPI`. |
 
+##### Three working profiles
+
+All three assume the firmware was built for the **300 MHz operating point**:
+
+```
+-DPICOCALC_CPU_FREQ_MHZ=300 -DPSRAM_SM_CLOCK_VAL=150000000 \
+-DPSRAM_FUDGE_VAL=0 -DPICOCALC_VREG_VAL=15
+```
+
+That matters because `config.286` only ever adjusts the machine *away from* its
+compiled-in boot state, and the flash divisor in particular is fixed at boot
+from the built-in clock. On a firmware built for a different clock these
+profiles do not transfer.
+
+**Low — 240 MHz.** Lowering only, so no `VREG` line is needed and flash follows
+the clock down on its boot divisor (240/3 = 80 MHz) with no help.
+
+```
+CPU=240
+PSRAM_SPI=60
+PSRAM_FUDGE=0
+BACKLIGHT=64
+STATUSBAR=1
+```
+
+**Medium — 300 MHz.** The build's own settings; nothing needs overriding.
+
+```
+BACKLIGHT=96
+STATUSBAR=1
+```
+
+**High — 360 MHz.** Raising the clock, so the order matters in two ways.
+`FLASH=75` comes *before* `CPU` deliberately: it enlarges the divisor to 4
+while still at 300 MHz (giving 75 MHz), so that when the clock goes to 360 the
+flash lands at 90 MHz. Without it the boot divisor of 3 would put flash at
+120 MHz the instant the clock changed — and the config parser itself is
+executing from flash at that moment.
+
+```
+VREG=15
+FLASH=75
+CPU=360
+PSRAM_SPI=90
+PSRAM_FUDGE=1
+BACKLIGHT=96
+STATUSBAR=1
+```
+
+| | Low | Medium | High |
+|---|---|---|---|
+| CPU | 240 MHz | 300 MHz | 360 MHz |
+| Core voltage | 1.30 V | 1.30 V | 1.30 V |
+| PSRAM SPI | 60 MHz | 75 MHz | 90 MHz |
+| Flash | 80 MHz | 100 MHz | 90 MHz |
+| Relative core power | ~0.67 | 1.00 | ~1.20 |
+| Verified | derived | **device-verified** | device-verified, not soaked |
+
+The PSRAM rate moves with the clock because the divider has to stay an exact
+integer, so each step costs or gains memory bandwidth as well as clock — and
+every guest RAM access is a PIO-SPI transaction, so memory-heavy software (SCI
+games especially) feels both.
+
+Two cautions. **Low is derived, not tested** — it is strictly less stressful
+than Medium in every dimension (lower clock, flash and PSRAM at the same
+voltage), so it should be safe, but it has not been run. Dropping `VREG=13`
+(1.20 V) on top would roughly double its saving and is the obvious next
+experiment, though no voltage below 1.30 V has yet worked at any clock here.
+**High has not been soaked** — 90 MHz SPI with fudge 1 at 1.30 V is a
+combination the sweep covered but nothing has run for long, and PSRAM failure
+corrupts quietly. Watch `e0` in the status bar.
+
 Every boot prints the PSRAM operating point actually in effect, and says so
 loudly if the divider is not exact:
 
