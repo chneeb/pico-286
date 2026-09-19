@@ -28,9 +28,12 @@ void mouse_portout(uint16_t port_number, uint8_t output_value) {
     
     switch (port_number) {
         case 4: // Modem control register
-            // Check if DTR (Data Terminal Ready) bit has changed
-            if ((output_value & 1) != (previous_register_value & 1)) {
-                // Software toggling of DTR causes mouse reset
+            // Bit 0 is DTR, bit 1 is RTS. A Microsoft serial mouse resets
+            // when either is cycled, and drivers differ in which they use -
+            // CTMOUSE pulses RTS, which this ignored entirely, so the driver
+            // saw no identification byte and refused to load.
+            if ((output_value & 3) != (previous_register_value & 3)) {
+                // A line toggle causes a mouse reset
                 serial_mouse.buffer_write_position = 0;
                 
                 // Fill buffer with identification sequence
@@ -54,6 +57,12 @@ uint8_t mouse_portin(uint16_t port_number) {
     
     switch (port_number) {
         case 0: // Data receive register
+            // An empty buffer reads as 0 rather than as whatever was last in
+            // it; with the line status register fixed this should not be
+            // reachable, but a stale byte is indistinguishable from a real one.
+            if (serial_mouse.buffer_write_position <= 0)
+                return 0;
+
             // Get the oldest byte from the buffer
             return_value = serial_mouse.data_buffer[0];
             
@@ -69,19 +78,31 @@ uint8_t mouse_portin(uint16_t port_number) {
             if (serial_mouse.buffer_write_position > 0)
                 doirq(4);
             
-            // Toggle some control bit (possibly RTS)
-            serial_mouse.registers[4] = ~serial_mouse.registers[4] & 1;
+            // NOTE: this used to do
+            //     serial_mouse.registers[4] = ~serial_mouse.registers[4] & 1;
+            // i.e. overwrite the modem control register with the inverse of its
+            // own bit 0 on every data read, destroying both DTR and RTS. No
+            // 8250 does that, and it made "has the line been toggled?" depend
+            // on how many bytes had been read since - which is why detection
+            // worked only after some particular sequence of events.
             return return_value;
             
         case 5: // Line status register (read-only)
             // Return data ready status
+            // This used to compute the right answer and then return a
+            // hardcoded 0x1 - "data ready" - forever. A driver polling LSR
+            // therefore never stopped reading, and once the buffer drained it
+            // went on consuming whatever was stale at the head of it. That
+            // turns a clean six-byte 'M' identification into an endless stream
+            // of junk, which a driver is right to reject.
+            //
+            // 0x60 is THR empty + transmitter empty: nothing here ever blocks
+            // on transmit, so they are always set.
+            return_value = 0x60;
             if (serial_mouse.buffer_write_position > 0)
-                return_value = 1;  // Data available
-            else
-                return_value = 0;  // No data
+                return_value |= 0x01;   // data available
             
-            // Always return 0x1 regardless of actual status calculation
-            return 0x1;
+            return return_value;
     }
     
     // Return the register value for other port numbers
