@@ -54,6 +54,9 @@ void picocalc_kbd_pump(void);
 
 int picocalc_read_battery(void);
 
+// Keyboard backlight (0..255). The panel backlight is picocalc_lcd_set_backlight().
+void picocalc_kbd_set_backlight(uint8_t level);
+
 // ─── Mouse emulation ───────────────────────────────────────────────────────
 // The PicoCalc has no pointing device, and pico-286 emulates a mouse only as
 // hardware (a Microsoft serial mouse on COM1) - there is no INT 33h in the

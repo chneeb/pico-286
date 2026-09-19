@@ -715,8 +715,34 @@ static char* next_token(char* t) {
 }
 
 static int new_cpu_mhz = CPU_FREQ_MHZ;
-static int vreg = VREG_VOLTAGE_1_60;
-static int new_vreg = VREG_VOLTAGE_1_60;
+
+// 1.60 V is inherited from upstream, which targets 500 MHz. It is well above
+// the SDK's VREG_VOLTAGE_MAX (1.30 V), which is why main() has to call
+// vreg_disable_voltage_limit() to reach it.
+//
+// Lowering it via config.286 is not the same test as lowering it here: main()
+// sets the voltage BEFORE raising the system clock and waits 100 ms for the
+// regulator to settle, whereas the config file is read long after the core is
+// already running at full clock, so the regulation transient happens at maximum
+// load. A build-time default is therefore the fair way to find the floor.
+#ifndef DEFAULT_VREG_VOLTAGE
+#define DEFAULT_VREG_VOLTAGE VREG_VOLTAGE_1_60
+#endif
+static int vreg = DEFAULT_VREG_VOLTAGE;
+static int new_vreg = DEFAULT_VREG_VOLTAGE;
+
+// Panel and keyboard backlight, 0-255, or -1 to leave the driver's default.
+// The panel backlight is the largest consumer on this board that costs nothing
+// in performance to turn down, and unlike the clock and voltage it cannot
+// destabilise anything. Applied after keyboard_init(), which owns the backlight
+// (it is driven by the keyboard MCU over I2C, not by a GPIO) and sets it to
+// full - so setting it here during config parsing would simply be overwritten.
+static int cfg_backlight = -1;
+static int cfg_kbd_backlight = -1;
+
+// PSRAM SPI bit rate in MHz, or -1 for the build-time value. Applied just
+// before init_psram(), which is what reads the operating point.
+static int cfg_psram_spi_mhz = -1;
 
 static void load_config_286() {
     UINT br;
@@ -739,7 +765,29 @@ static void load_config_286() {
                 if (new_vreg != vreg && new_vreg >= VREG_VOLTAGE_0_55 && new_vreg <= VREG_VOLTAGE_3_30) {
                     vreg = new_vreg;
                     vreg_set_voltage(vreg);
+                    // main() waits 100 ms after setting the voltage before it
+                    // touches the clocks; do the same here rather than run on
+                    // the regulation transient.
+                    sleep_ms(100);
                 }
+            } else if (strcmp(t, "PSRAM_SPI") == 0) {
+                // SPI bit rate in MHz - the number the sweep build prints, not
+                // the state-machine clock, which is twice it.
+                t = next_token(t);
+                const int mhz = atoi(t);
+                if (mhz > 0 && mhz <= 200) cfg_psram_spi_mhz = mhz;
+            } else if (strcmp(t, "PSRAM_FUDGE") == 0) {
+                t = next_token(t);
+                const int f = atoi(t);
+                if (f == 0 || f == 1) psram_fudge = (uint8_t) f;
+            } else if (strcmp(t, "BACKLIGHT") == 0) {
+                t = next_token(t);
+                const int v = atoi(t);
+                if (v >= 0 && v <= 255) cfg_backlight = v;
+            } else if (strcmp(t, "KBD_BACKLIGHT") == 0) {
+                t = next_token(t);
+                const int v = atoi(t);
+                if (v >= 0 && v <= 255) cfg_kbd_backlight = v;
             } else if (!new_flash_timings && strcmp(t, "FLASH") == 0) {
                 t = next_token(t);
                 int new_flash_mhz = atoi(t);
@@ -840,6 +888,38 @@ int main(void) {
     }
 #endif
 
+#ifdef PSRAM_SM_CLOCK_HZ
+    // A config-supplied rate is only honoured if it divides the system clock
+    // exactly. A fractional PIO divider dithers the cycle length instead of
+    // dividing evenly, and this bus fails on sampling phase - so an
+    // almost-right number here is worse than the build-time default, and it
+    // fails as memory corruption during the BIOS memory test rather than as
+    // anything that names PSRAM. Refuse it rather than let it through.
+    if (cfg_psram_spi_mhz > 0) {
+        const uint32_t want = (uint32_t) cfg_psram_spi_mhz * 2 * MHZ;
+        const uint32_t sys = clock_get_hz(clk_sys);
+        if (want == 0 || sys % want != 0) {
+            printf("PSRAM_SPI=%d rejected: %lu/%lu not exact\n",
+                   cfg_psram_spi_mhz, (unsigned long) sys, (unsigned long) want);
+        } else {
+            psram_sm_clock_hz = want;
+        }
+    }
+    // Check the rate that is actually about to be used, whatever set it. A
+    // CPU= line in config.286 changes clk_sys without touching the PSRAM rate,
+    // so a stale one left over from another build breaks the divider just as
+    // effectively as a bad PSRAM_SPI - and nothing downstream says PSRAM when
+    // it does. Too late to fall back safely by this point, so at least make it
+    // say so instead of failing as a mysterious BIOS memory error.
+    if (psram_sm_clock_hz == 0 || clock_get_hz(clk_sys) % psram_sm_clock_hz != 0) {
+        printf("** PSRAM DIVIDER NOT EXACT - EXPECT CORRUPTION **\n");
+        printf("   sys %lu / sm %lu\n",
+               (unsigned long) clock_get_hz(clk_sys), (unsigned long) psram_sm_clock_hz);
+    }
+    printf("PSRAM %lu MHz SPI fudge %u\n",
+           (unsigned long) (psram_sm_clock_hz / 2 / MHZ), (unsigned) psram_fudge);
+#endif
+
     // Initialize PSRAM
     rp2350a = (*((io_ro_32*)(SYSINFO_BASE + SYSINFO_PACKAGE_SEL_OFFSET)) & 1);
     int gp = -1;
@@ -926,6 +1006,11 @@ int main(void) {
 
     // Initialize peripherals
     keyboard_init();
+
+#ifdef PICOCALC
+    if (cfg_backlight >= 0) picocalc_lcd_set_backlight((uint8_t) cfg_backlight);
+    if (cfg_kbd_backlight >= 0) picocalc_kbd_set_backlight((uint8_t) cfg_kbd_backlight);
+#endif
 
     // Check for mouse availability
 #ifndef PICOCALC
