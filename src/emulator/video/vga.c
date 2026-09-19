@@ -4,6 +4,7 @@
 
 #pragma GCC optimize("Ofast")
 #include "emulator/emulator.h"
+#include "emulator/includes/font8x8.h"
 #if PICO_ON_DEVICE
 #include "graphics.h"
 #endif
@@ -575,5 +576,152 @@ uint16_t vga_portin(uint16_t portnum) {
         }
         default:
             return 0xff;
+    }
+}
+
+// ─── BIOS character output in graphics modes (int 10h AH=09/0Ah) ───────────
+//
+// This used to call tga_draw_char() for every graphics mode with the colour
+// hardcoded to 9. That writes the Tandy layout - 4-bit nibbles, two pixels per
+// byte, based at tga_offset (0x8000):
+//
+//   CGA 4/5/6 also read from VIDEORAM[0x8000 + ...], so the writes landed in the
+//   visible region but at the wrong bit depth - each glyph stretched 2x and its
+//   nibble bits split across two 2-bit pixels. That is the colour-fringed look.
+//
+//   EGA 0Dh reads VIDEORAM[y*40 + x/8], offsets 0-8000, so the writes went to
+//   memory the renderer never reads and the text vanished entirely.
+//
+// Every write goes through vram_rmw(). tga_draw_char() computed its offset in a
+// uint16_t, so however absurd the cursor position it wrapped harmlessly inside
+// VIDEORAM; computing in uint32_t removes that accidental safety net, and
+// CURSOR_X/CURSOR_Y are BIOS-data-area bytes, so a cell can be requested at row
+// 255 (y up to 2047). The bounds check is what keeps a stray cursor from writing
+// through the end of VIDEORAM and into the rest of the emulator's state.
+//
+// Switches on raw BIOS mode numbers, not the graphics_mode_t names, which live
+// in a Pico-only header; videomode holds the BIOS value.
+static inline void vram_rmw(const uint32_t off, const uint32_t mask, const uint32_t value) {
+    if (off >= VIDEORAM_SIZE) return;
+    VIDEORAM[off] = (VIDEORAM[off] & ~mask) | (value & mask);
+}
+
+static void gfx_putpixel(const int x, const int y, const uint8_t color) {
+    if (x < 0 || y < 0) return;
+    switch (videomode) {
+        case 0x04:   // CGA 320x200x4
+        case 0x05: { // CGA 320x200x4 mono
+            if (x >= 320 || y >= 200) return;
+            const uint32_t off = 0x8000 + (vram_offset << 1)
+                               + __fast_mul(y >> 1, 80) + ((y & 1) << 13) + (x >> 2);
+            const uint8_t sh = 6 - ((x & 3) << 1);
+            vram_rmw(off, 3u << sh, (uint32_t) (color & 3u) << sh);
+            break;
+        }
+        case 0x06: { // CGA 640x200x2
+            if (x >= 640 || y >= 200) return;
+            const uint32_t off = 0x8000 + (vram_offset << 1)
+                               + __fast_mul(y >> 1, 80) + ((y & 1) << 13) + (x >> 3);
+            const uint8_t sh = 7 - (x & 7);
+            vram_rmw(off, 1u << sh, (uint32_t) (color & 1u) << sh);
+            break;
+        }
+        case 0x0D: { // EGA 320x200x16, planar
+            if (x >= 320 || y >= 200) return;
+            const uint32_t off = __fast_mul(y, 40) + (x >> 3);
+            const uint8_t bit = 7 - (x & 7);
+            for (int p = 0; p < 4; p++)
+                vram_rmw(off, 1u << (bit + 8 * p),
+                         (uint32_t) ((color >> p) & 1u) << (bit + 8 * p));
+            break;
+        }
+        case 0x0E:   // EGA 640x200x16
+        case 0x10:   // EGA 640x350x16
+        case 0x12: { // VGA 640x480x16
+            if (x >= 640 || y >= 480) return;
+            const uint32_t off = __fast_mul(y, 80) + (x >> 3);
+            const uint8_t bit = 7 - (x & 7);
+            for (int p = 0; p < 4; p++)
+                vram_rmw(off, 1u << (bit + 8 * p),
+                         (uint32_t) ((color >> p) & 1u) << (bit + 8 * p));
+            break;
+        }
+        case 0x11: { // VGA 640x480x2
+            if (x >= 640 || y >= 480) return;
+            const uint32_t off = __fast_mul(y, 80) + (x >> 3);
+            const uint8_t sh = 7 - (x & 7);
+            vram_rmw(off, 1u << sh, (uint32_t) (color & 1u) << sh);
+            break;
+        }
+        case 0x13:   // VGA 320x200x256, linear
+        case 0xFF: { // ...and its planar variant
+            if (x >= 320 || y >= 200) return;
+            vram_rmw(__fast_mul(y, 320) + x, 0xFFu, color);
+            break;
+        }
+        default: {   // Tandy: tga_draw_pixel()'s layout, bounded
+            if (x >= 640 || y >= 200) return;
+            const uint32_t off = tga_offset + (x >> 1) + ((y >> 2) << 13);
+            const bool odd = (x & 1) != 0;
+            vram_rmw(off, odd ? 0x0Fu : 0xF0u,
+                     odd ? (color & 0x0Fu) : ((uint32_t) (color & 0x0Fu) << 4));
+            break;
+        }
+    }
+}
+
+// Characters 128-255 come from the user font pointed to by INT 1Fh, which is how
+// software supplies its own high-half glyphs - Sierra's AGI interpreter installs
+// one and draws its text and window borders from it, with the high bit set.
+//
+// The two fonts have OPPOSITE bit order. font_8x8 here is stored LSB-first (bit 0
+// is the leftmost pixel - check 'L' at 0x4C, or tga_draw_char(), or the display
+// drivers' text renderers, which all agree). A guest-supplied font is a normal
+// DOS font and is MSB-first. Rendering the guest's font in the built-in font's
+// order mirrors every glyph horizontally, so normalise it to LSB-first here and
+// the drawing loop stays uniform.
+static inline uint8_t bitrev8(uint8_t b) {
+    b = (uint8_t) ((b >> 4) | (b << 4));
+    b = (uint8_t) (((b & 0xCC) >> 2) | ((b & 0x33) << 2));
+    b = (uint8_t) (((b & 0xAA) >> 1) | ((b & 0x55) << 1));
+    return b;
+}
+
+static uint8_t glyph_byte(const uint8_t ch, const int row) {
+    if (ch >= 128) {
+        const uint16_t off = read86(0x7C) | (read86(0x7D) << 8);
+        const uint16_t seg = read86(0x7E) | (read86(0x7F) << 8);
+        if (seg || off)
+            return bitrev8(read86(((uint32_t) seg << 4) + off
+                                  + ((uint32_t) (ch - 128) << 3) + row));
+    }
+    return font_8x8[((uint32_t) ch << 3) + row];
+}
+
+void bios_draw_char_gfx(const uint8_t ch, const int col, const int row,
+                        const uint8_t attr, const bool opaque) {
+    // 256-colour modes take the whole byte; everything else the low nibble.
+    // Bit 7 requests XOR, which is not implemented and is drawn as a plain
+    // write, as the previous code did for every case.
+    //
+    // Background follows the documented BIOS behaviour: AH=09h paints the
+    // glyph's background in colour 0, AH=0Ah - "write character only, do not
+    // change the attribute" - leaves it alone. Reading the attribute's high
+    // nibble as a background colour was tried instead and is NOT supported by
+    // evidence: the screen areas that looked like they needed it turned out not
+    // to use this call at all.
+    const uint8_t fg = videomode == 0x13 ? attr : (attr & 0x0F);
+    const int px = col << 3, py = row << 3;
+    if (px >= 640 || py >= 480) return;   // skip the cell, not 64 clipped pixels
+
+    for (int r = 0; r < 8; r++) {
+        uint8_t bits = glyph_byte(ch, r);
+        for (int c = 0; c < 8; c++) {
+            // bit 0 is the leftmost pixel, matching tga_draw_char() and the
+            // display drivers' text renderers.
+            if (bits & 1) gfx_putpixel(px + c, py + r, fg);
+            else if (opaque) gfx_putpixel(px + c, py + r, 0);
+            bits >>= 1;
+        }
     }
 }

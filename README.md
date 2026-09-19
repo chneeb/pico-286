@@ -314,7 +314,8 @@ something, e.g. `DOSSHELL` in text mode.
 | Mouse — Ctrl-Alt-M with CTMOUSE loaded | working (tested in a Sierra SCI game) |
 | Audio (PWM) — AdLib/OPL2 | working |
 | Audio — PC speaker | working (routed through the mixer to GP26/27 rather than synthesised on `PWM_BEEPER`/GP28) |
-| Sierra AGI text in message windows | **broken** — see the known issue below; affects all targets, not just PicoCalc |
+| Sierra AGI message/dialog text | working |
+| Sierra AGI status bar fill and text clearing | **broken** — see the known issue below; affects all targets |
 
 #### Disk images on the PicoCalc
 
@@ -359,38 +360,35 @@ configured, the option did not apply — check it landed with:
 grep -o "PSRAM_SM_CLOCK_HZ=[0-9]*" build.ninja
 ```
 
-#### Known issue: BIOS character output in graphics modes
+#### Known issue: AGI status bar and input line
 
-**Sierra AGI games show their message windows but the text inside is missing.**
-This is not PicoCalc-specific — it affects every pico-286 target.
+**Fixed:** Sierra AGI message-window and dialog text now renders. `int 10h
+AH=09/0Ah` used to route every graphics mode through `tga_draw_char()` with the
+colour hardcoded to 9, writing the Tandy layout (4-bit nibbles based at
+`tga_offset` = 0x8000). CGA reads from 0x8000 too, so text landed in the visible
+region at the wrong bit depth — the colour-fringed look; EGA 0Dh reads offsets
+0–8000, so text was written to memory the renderer never reads and vanished.
+Characters 128–255 also need the guest's own font via the **INT 1Fh** vector,
+which AGI installs — and that font is MSB-first while this project's built-in
+`font_8x8` is LSB-first, so rendering both the same way mirrored every glyph.
 
-`int 10h AH=09/0Ah` (write character at cursor) routes *every* graphics mode
-through `tga_draw_char()` with the colour hardcoded to 9 (`cpu.c`, the
-`TODO: char attr?`). That writes the Tandy layout — packed 4-bit nibbles with an
-8 KB bank interleave — which is wrong for the planar EGA/VGA modes and for CGA,
-so BIOS-written characters do not land as glyphs. AGI draws its window boxes
-itself, which is why the boxes appear and only the text is lost.
+**Still broken:** the status bar is black except behind its text, and typed
+commands and messages are never cleared.
 
-The writes are harmless rather than corrupting: `tga_draw_char()` addresses
-`tga_offset + ...` with `tga_offset = 0x8000`, so every glyph byte lands at
-VIDEORAM offset 32768 or above, while EGA mode 0Dh displays offsets 0-8000. The
-characters are written to memory the renderer never reads, which is why the
-boxes come out cleanly empty instead of speckled.
+These are **not** BIOS character output. A trace of every `AH=09/0Ah` call with
+its target cell shows **no row-0 traffic at all**, and none for the input line —
+AGI draws both by writing video memory directly. Two attempts to fix them
+through this call (honouring the attribute's high nibble as a background colour,
+and honouring `CX`) had no observable effect, which is the evidence for that
+conclusion. The attribute-background change was reverted as unsupported; `CX` is
+kept because a repeat count is documented behaviour that was simply missing,
+though nothing here exercises it.
 
-An attempt at a fix (render the glyph pixel by pixel, dispatching on the real
-mode, honouring `BL`) got letters onto the screen but they were **all the same
-glyph and in the wrong colours**, so something further is wrong. Leads not yet
-followed up:
-
-- `CX` (repeat count) is ignored by the handler. If AGI asks for N copies, that
-  could explain one glyph appearing where varied text belongs.
-- The background rule is a guess: the attempt painted background pixels in
-  colour 0 for `AH=09` and left them untouched for `AH=0Ah`, reading "does not
-  change the attribute" as "does not paint the background". That may be wrong.
-- Whether AGI even passes the character in `AL` on these calls is unverified.
-
-Next step is to log `AH`, `AL`, `BL`, `CX` and the cursor cell for the first few
-calls and read off what the caller actually passes, rather than infer it.
+The investigation therefore belongs in the EGA planar write path —
+`vga_mem_write()` and the graphics-controller registers (bit mask, map mask,
+set/reset) — not in `int 10h`. Worth knowing that AGI's dialog *boxes* and the
+game graphics render correctly, so whatever is missing is specific to how it
+fills and clears those two areas.
 
 #### Notes for future work
 

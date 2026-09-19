@@ -5,6 +5,7 @@
 #else
 #endif
 #include <stdint.h>
+#include <stdbool.h>   // pico.h supplies this on device; the host build needs it
 #include "cpu.h"
 
 #ifdef __cplusplus
@@ -221,6 +222,11 @@ extern void reset86();
 
 // Mouse
 extern void sermouseevent(uint8_t buttons, int8_t xrel, int8_t yrel);
+
+// BIOS character output in graphics modes (int 10h AH=09/0Ah). `opaque` paints
+// the glyph's background in colour 0 as the IBM BIOS does; AH=0Ah, documented as
+// not changing the attribute, leaves it alone.
+extern void bios_draw_char_gfx(uint8_t ch, int col, int row, uint8_t attr, bool opaque);
 
 extern uint8_t mouse_portin(uint16_t portnum);
 

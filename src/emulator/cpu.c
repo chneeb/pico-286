@@ -479,10 +479,21 @@ void intcall86(uint8_t intnum) {
             switch (CPU_AH) {
                 case 0x09:
                 case 0x0a:
-                    if (videomode >= 8 && videomode <= 0x13) {
-                        // TODO: char attr?
-                        tga_draw_char(CPU_AL, CURSOR_X, CURSOR_Y, 9);
-                        printf("%c", CPU_AL);
+                    // Graphics modes: render the glyph ourselves, honouring the
+                    // colour in BL. Text modes fall through to the normal path.
+                    if (videomode >= 4 && videomode != 7) {
+                        // CX is a repeat count: the character is written CX
+                        // times into consecutive cells from the cursor. It was
+                        // previously ignored, so a single call meant to fill a
+                        // row produced one cell - AGI paints its status bar and
+                        // erases text by writing runs of spaces, which is why
+                        // the bar was black between the words and why typed
+                        // commands and messages never cleared.
+                        uint16_t count = CPU_CX ? CPU_CX : 1;
+                        if (count > 128) count = 128;   // a row is 40 or 80 cells
+                        for (uint16_t i = 0; i < count; i++)
+                            bios_draw_char_gfx(CPU_AL, CURSOR_X + i, CURSOR_Y,
+                                               CPU_BL, CPU_AH == 0x09);
                         return;
                     }
                     break;
