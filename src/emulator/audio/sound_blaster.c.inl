@@ -148,6 +148,19 @@ static INLINE void blaster_command(const uint8_t command_byte) {
             return;
         case DSP_SET_TIME_CONSTANT: //set time constant
             timeconst = 256 - command_byte;
+            // core1_pump() uses timeconst directly as a microsecond period, so
+            // a time constant of 255 asks for a sample every 1 us - a 1 MHz
+            // rate. Each sample walks the guest's DMA buffer, which lives in
+            // PSRAM here, so every one is a PIO-SPI transaction from core1
+            // contending with core0's memory accesses: the emulated machine
+            // crawls and the sound sticks.
+            //
+            // Nothing is gained above the rate the mixer actually outputs -
+            // the extra samples are discarded - so clamp there. A real SB 1.x
+            // tops out around 23 kHz and an SB Pro around 45 kHz anyway, so
+            // this only rejects values no genuine card would accept.
+            if (timeconst < 1000000 / SOUND_FREQUENCY)
+                timeconst = 1000000 / SOUND_FREQUENCY;
             sb_samplerate = 1000000 / timeconst;
             sound_blaster.current_dsp_command = 0;
 #ifdef DEBUG_BLASTER

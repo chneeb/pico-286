@@ -205,12 +205,24 @@ static void lcd_set_window(const uint16_t x, const uint16_t y,
     lcd_write_cmd(raset, 5);
 }
 
+// pcalc_lcd_wait_idle() spins until the PIO stalls on an empty FIFO. That is a
+// whole FIFO of pixel words at the panel clock - long enough to miss an audio
+// sample, because PWM output is unbuffered and paced solely by how often
+// core1_pump() is called. So drain it with the pump running.
+static inline void lcd_wait_idle_yielding(void) {
+    uint32_t stall = 1u << (sm_lcd + PIO_FDEBUG_TXSTALL_LSB);
+    PIO_LCD->fdebug = stall;
+    while (!(PIO_LCD->fdebug & stall)) {
+        if (yield_enabled) lcd_yield();
+    }
+}
+
 // Issue RAMWR and leave the bus in pixel-streaming state (CS low, DC high,
 // autopull threshold 32 so whole words shift out MSB-first).
 static inline void start_pixels(void) {
     const uint8_t cmd = 0x2C;
     lcd_write_cmd(&cmd, 1);
-    pcalc_lcd_wait_idle(PIO_LCD, sm_lcd);
+    lcd_wait_idle_yielding();
     lcd_set_dc_cs(1, 0);
     // Reset the shift state before changing the autopull threshold. Raising it
     // from 8 to 32 while the output shift counter sits at 8 would leave the SM
@@ -223,7 +235,7 @@ static inline void start_pixels(void) {
 }
 
 static inline void stop_pixels(void) {
-    pcalc_lcd_wait_idle(PIO_LCD, sm_lcd);
+    lcd_wait_idle_yielding();
     lcd_set_dc_cs(1, 1);
     pio_sm_restart(PIO_LCD, sm_lcd);   // same reasoning, 32 -> 8
     pcalc_lcd_set_pull_threshold(PIO_LCD, sm_lcd, 8);
@@ -702,6 +714,7 @@ void graphics_set_mode(const enum graphics_mode_t mode) {
         for (uint row = 0; row < g.y_off; row++)
             send_words(word_line[0], LINE_WORDS);
         while (dma_channel_is_busy(lcd_dma_chan)) {
+            if (yield_enabled) lcd_yield();
         }
         stop_pixels();
     }
@@ -712,6 +725,7 @@ void graphics_set_mode(const enum graphics_mode_t mode) {
         for (uint row = 0; row < bottom; row++)
             send_words(word_line[0], LINE_WORDS);
         while (dma_channel_is_busy(lcd_dma_chan)) {
+            if (yield_enabled) lcd_yield();
         }
         stop_pixels();
     }
@@ -818,6 +832,7 @@ void graphics_init(void) {
             send_words((row == 0 || row == PICOCALC_LCD_HEIGHT - 1)
                        ? word_line[1] : word_line[0], LINE_WORDS);
         while (dma_channel_is_busy(lcd_dma_chan)) {
+            if (yield_enabled) lcd_yield();
         }
         stop_pixels();
         sleep_ms(2000);
