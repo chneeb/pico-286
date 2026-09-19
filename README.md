@@ -531,14 +531,36 @@ BACKLIGHT=96
 STATUSBAR=1
 ```
 
-| | Low | Medium | High |
-|---|---|---|---|
-| CPU | 240 MHz | 300 MHz | 360 MHz |
-| Core voltage | 1.30 V | 1.30 V | 1.30 V |
-| PSRAM SPI | 60 MHz | 75 MHz | 90 MHz |
-| Flash | 80 MHz | 100 MHz | 90 MHz |
-| Relative core power | ~0.67 | 1.00 | ~1.20 |
-| Verified | derived | **device-verified** | device-verified, not soaked |
+**Max — 396 MHz (stock).** The upstream operating point, and the only one that
+needs the core voltage raised: 396 MHz does not run at 1.30 V here, so `VREG`
+comes first and the clock follows once the regulator has settled. `FLASH=75` is
+needed for the same reason as in High, and lands flash at exactly the 99 MHz the
+stock build uses. Roughly double Medium's core power — V² is doing most of that,
+not the 96 MHz of extra clock.
+
+```
+VREG=19
+FLASH=75
+CPU=396
+PSRAM_SPI=99
+PSRAM_FUDGE=1
+BACKLIGHT=96
+STATUSBAR=1
+```
+
+| | Low | Medium | High | Max |
+|---|---|---|---|---|
+| CPU | 240 MHz | 300 MHz | 360 MHz | 396 MHz |
+| Core voltage | 1.30 V | 1.30 V | 1.30 V | **1.60 V** |
+| PSRAM SPI | 60 MHz | 75 MHz | 90 MHz | 99 MHz |
+| Flash | 80 MHz | 100 MHz | 90 MHz | 99 MHz |
+| Relative core power | 0.80 | 1.00 | 1.20 | **2.00** |
+| Verified | derived | **device-verified** | worked, not soaked | stock point, soaked |
+
+Relative power is `(V/1.30)² x (f/300)`. Note how flat Low → High is against
+the jump to Max: within one voltage the cost is linear in clock, but Max pays
+`(1.60/1.30)² = 1.51` before a single extra megahertz is counted. That is the
+whole reason 300 MHz at 1.30 V is worth having.
 
 The PSRAM rate moves with the clock because the divider has to stay an exact
 integer, so each step costs or gains memory bandwidth as well as clock — and
@@ -553,6 +575,12 @@ experiment, though no voltage below 1.30 V has yet worked at any clock here.
 **High has not been soaked** — 90 MHz SPI with fudge 1 at 1.30 V is a
 combination the sweep covered but nothing has run for long, and PSRAM failure
 corrupts quietly. Watch `e0` in the status bar.
+
+Max's PSRAM point (99 MHz, fudge 1) is the one that *was* soaked clean at
+~5.0 MB/s, but it was soaked with 1.60 V applied at boot rather than raised
+underneath a running core, which is what this profile does. The order here is
+the safe one — voltage up, settle, then clock — but it is not the same path
+that was tested.
 
 Every boot prints the PSRAM operating point actually in effect, and says so
 loudly if the divider is not exact:
