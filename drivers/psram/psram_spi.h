@@ -631,6 +631,25 @@ __force_inline static void psram_write_async_fast(psram_spi_inst_t* spi, uint32_
 };
 extern psram_spi_inst_t psram_spi;
 extern bool PSRAM_AVAILABLE;
+#ifndef PSRAM_FUDGE
+// The "fudge" PIO program adds an extra read-sync cycle. Which variant is
+// correct depends on the sampling phase and therefore pairs with the clock;
+// it is not independently tunable. Determine both together with a sweep.
+#define PSRAM_FUDGE 0
+#endif
+
+// The PSRAM operating point, initialised from PSRAM_SM_CLOCK_HZ / PSRAM_FUDGE
+// but writable before init_psram() runs, so a board's working point can be
+// found by editing a file on the SD card rather than by reflashing once per
+// attempt. The SPI bit rate is half psram_sm_clock_hz - the PIO program takes
+// two cycles per bit.
+//
+// psram_sm_clock_hz must divide the system clock EXACTLY. The PIO divider is
+// 16.8 fixed-point and a fractional value makes it dither the cycle length
+// rather than divide evenly, which a sampling-phase-critical bus cannot take.
+extern uint32_t psram_sm_clock_hz;
+extern uint8_t psram_fudge;
+
 static __always_inline bool init_psram() {
 #ifdef PSRAM_SM_CLOCK_HZ
     // Reliability on a PIO-SPI PSRAM is a sampling-phase problem, not a raw
@@ -638,17 +657,15 @@ static __always_inline bool init_psram() {
     // the state-machine clock to a known-good rate and derive the divisor from
     // whatever the system clock happens to be, instead of hardcoding a divisor
     // that only holds at one system clock.
-    const float clkdiv = (float) clock_get_hz(clk_sys) / (float) PSRAM_SM_CLOCK_HZ;
+    //
+    // Read from a variable rather than the macro so the operating point can be
+    // found from a config file instead of a rebuild per attempt - see
+    // psram_sm_clock_hz below.
+    const float clkdiv = (float) clock_get_hz(clk_sys) / (float) psram_sm_clock_hz;
 #else
     const float clkdiv = 2.4f;
 #endif
-#ifndef PSRAM_FUDGE
-// The "fudge" PIO program adds an extra read-sync cycle. Which variant is
-// correct depends on the sampling phase and therefore pairs with the clock;
-// it is not independently tunable. Determine both together with a sweep.
-#define PSRAM_FUDGE 0
-#endif
-    psram_spi = psram_spi_init_clkdiv(pio1, -1, clkdiv, PSRAM_FUDGE);
+    psram_spi = psram_spi_init_clkdiv(pio1, -1, clkdiv, psram_fudge);
     psram_write32(&psram_spi, 0x313373, 0xDEADBEEF);
     PSRAM_AVAILABLE = 0xDEADBEEF == psram_read32(&psram_spi, 0x313373);
     // Zeroing 8 MB is ~2M SPI transactions. Pointless if nothing answered.

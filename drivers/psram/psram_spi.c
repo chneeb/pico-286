@@ -4,6 +4,12 @@
 psram_spi_inst_t psram_spi;
 bool PSRAM_AVAILABLE;
 
+#ifndef PSRAM_SM_CLOCK_HZ
+#define PSRAM_SM_CLOCK_HZ 0   // unused: that build takes the fixed-clkdiv path
+#endif
+uint32_t psram_sm_clock_hz = PSRAM_SM_CLOCK_HZ;
+uint8_t psram_fudge = PSRAM_FUDGE;
+
 #if defined(PSRAM_ASYNC) && defined(PSRAM_ASYNC_SYNCHRONIZE)
 void __isr psram_dma_complete_handler() {
 #if PSRAM_ASYNC_DMA_IRQ == 0
