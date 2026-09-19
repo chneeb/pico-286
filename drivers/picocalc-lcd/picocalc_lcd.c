@@ -83,6 +83,22 @@ enum graphics_mode_t graphics_mode = TEXTMODE_80x25_COLOR;
 // Set once the panel is initialised and blanked. core0 waits on this before
 // switching the backlight on, so the user never sees an uninitialised panel -
 // and so that only core0 ever drives the keyboard MCU's I2C bus.
+// Paint the printf() overlay over the bottom of the panel. Defaults to the
+// build-time PICOCALC_LCD_SELFTEST so existing builds behave as before;
+// config.286's DEBUG_OVERLAY overrides it either way.
+volatile bool picocalc_lcd_overlay = PICOCALC_LCD_SELFTEST;
+
+// Permanent stats bar across the top. Off by default; config.286's STATUSBAR
+// turns it on.
+volatile bool picocalc_lcd_statusbar = false;
+
+// Panel bit rate, read by graphics_init(). Unlike the PSRAM rate this has no
+// exact-divider constraint - the PIO divider is allowed to be fractional here,
+// because a dithered clock on a write-only display costs a little jitter, not
+// correctness - and its failure mode is visible (shearing, noise, dropped
+// pixels) rather than silent corruption. So it is simply clamped, not refused.
+uint32_t picocalc_lcd_max_hz = PICOCALC_LCD_MAX_HZ;
+
 volatile bool picocalc_lcd_ready = false;
 
 // Frames pushed to the panel; read by the perf counter in pico-main.c.
@@ -345,11 +361,10 @@ static void render_text40_line(const uint y, uint8_t *out) {
     }
 }
 
-#if PICOCALC_LCD_SELFTEST
 // printf() on this platform does not reach a serial port: pico-main.c's
-// _putchar() writes into DEBUG_VRAM instead. Painting it is a BRING-UP AID
-// ONLY - with PICOCALC_BRINGUP=OFF the panel shows the emulator's screen and
-// nothing else.
+// _putchar() writes into DEBUG_VRAM instead. Painting it is controlled at
+// runtime by picocalc_lcd_overlay, which config.286's DEBUG_OVERLAY key sets -
+// diagnosing a board should not need a different firmware from running it.
 extern uint8_t __aligned(4) DEBUG_VRAM[80 * 10];
 
 // Bring-up variant: the same buffer in the 8x8 font, 40 columns wide. The boot
@@ -375,7 +390,63 @@ static void render_debug_line8(const uint y, uint8_t *out) {
         }
     }
 }
-#endif
+
+// ─── Status bar ────────────────────────────────────────────────────────────
+//
+// Every mode is letterboxed into the 320x320 panel - the smallest top margin of
+// any of them is 40 rows (VGA 640x480), and most have 60 or more. So a 6-row
+// bar at the very top costs no picture area in any mode, unlike the printf
+// overlay at the bottom, which covers 80 rows of it.
+//
+// 80 columns of the 4x6 font, repainted only when the text changes or a mode
+// switch has blanked the margins - not per frame, which would pay the
+// window-set and shift-state cost 30 times a second to redraw the same pixels.
+#define STATUSBAR_ROWS 6
+
+static char status_text[TEXTMODE_COLS + 1];
+static volatile bool status_dirty;
+
+void picocalc_lcd_set_status(const char *text) {
+    if (!text) return;
+    size_t i = 0;
+    for (; i < TEXTMODE_COLS && text[i]; i++) {
+        if (status_text[i] != text[i]) status_dirty = true;
+        status_text[i] = text[i];
+    }
+    for (; i < TEXTMODE_COLS; i++) {
+        if (status_text[i] != ' ') status_dirty = true;
+        status_text[i] = ' ';
+    }
+    status_text[TEXTMODE_COLS] = 0;
+}
+
+static void render_status_line(const uint glyph_line, uint8_t *out) {
+    for (uint column = 0; column < TEXTMODE_COLS; column++) {
+        uint8_t glyph_pixels = font_4x6[__fast_mul((uint8_t) status_text[column], 6) + glyph_line];
+#pragma GCC unroll(4)
+        for (int bit = 4; bit--;) {
+            *out++ = glyph_pixels & 1 ? 0x0F : 0x01;   // white on dark blue
+            glyph_pixels >>= 1;
+        }
+    }
+}
+
+static void paint_status_bar(uint8_t *idx_line, uint32_t *word_line0) {
+    palette[0x01] = panel565(0x000040u);
+    palette[0x0f] = panel565(0xFFFFFFu);
+    lcd_set_window(0, 0, PICOCALC_LCD_WIDTH, STATUSBAR_ROWS);
+    start_pixels();
+    for (uint row = 0; row < STATUSBAR_ROWS; row++) {
+        render_status_line(row, idx_line);
+        pack_line_320(idx_line, word_line0);
+        send_words(word_line0, LINE_WORDS);
+        while (dma_channel_is_busy(lcd_dma_chan)) {
+            if (yield_enabled) lcd_yield();
+        }
+    }
+    stop_pixels();
+    status_dirty = false;
+}
 
 static void render_text_line(const uint y, uint8_t *out) {
     const uint8_t y_div_6 = y / 6;
@@ -557,6 +628,9 @@ void __time_critical_func(refresh_lcd)(void) {
     const bool is_text40 = mode == TEXTMODE_40x25_BW || mode == TEXTMODE_40x25_COLOR;
     const bool is_text80 = mode == TEXTMODE_80x25_BW || mode == TEXTMODE_80x25_COLOR;
 
+    if (picocalc_lcd_statusbar && status_dirty)
+        paint_status_bar(idx_line, word_line[0]);
+
     lcd_set_window(0, g.y_off, PICOCALC_LCD_WIDTH, g.out_h);
     start_pixels();
 
@@ -585,9 +659,9 @@ void __time_critical_func(refresh_lcd)(void) {
     }
     stop_pixels();
 
-#if PICOCALC_LCD_SELFTEST
-    // Bring-up: legible diagnostics over the bottom of the panel, whatever mode
-    // is active. Turn PICOCALC_LCD_SELFTEST off to get the picture back.
+    if (picocalc_lcd_overlay) {
+    // Legible diagnostics over the bottom of the panel, whatever mode is
+    // active. DEBUG_OVERLAY=0 in config.286 gets the picture back.
     {
         const uint overlay_y = PICOCALC_LCD_HEIGHT - DEBUG_OVERLAY8_ROWS;
         // Blue background so it is unmistakably a text panel and not noise.
@@ -609,7 +683,7 @@ void __time_critical_func(refresh_lcd)(void) {
         stop_pixels();
     }
     return;
-#endif
+    }
 
 }
 
@@ -617,6 +691,7 @@ void __time_critical_func(refresh_lcd)(void) {
 
 void graphics_set_mode(const enum graphics_mode_t mode) {
     graphics_mode = mode;
+    status_dirty = true;   // the margin repaint below blanks the bar
     // Repaint the letterbox margins: a mode change can shrink the active area
     // and leave the previous mode's pixels stranded top and bottom.
     const lcd_geometry_t g = mode_geometry(mode);
@@ -679,7 +754,7 @@ void graphics_init(void) {
     // Two PIO cycles per bit, so divide down to the target bit rate.
     const uint32_t sys_hz = clock_get_hz(clk_sys);
     float init_div = (float) sys_hz / (2.0f * (float) PICOCALC_LCD_INIT_HZ);
-    float fast_div = (float) sys_hz / (2.0f * (float) PICOCALC_LCD_MAX_HZ);
+    float fast_div = (float) sys_hz / (2.0f * (float) picocalc_lcd_max_hz);
     if (init_div < 1.0f) init_div = 1.0f;
     if (fast_div < 1.0f) fast_div = 1.0f;
 

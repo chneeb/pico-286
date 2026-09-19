@@ -449,7 +449,17 @@ keeping the old one, so 396 MHz gives 99 MHz flash (÷4) and 300 MHz gives
 
 The lever that costs nothing is the panel backlight (`BACKLIGHT` below). It is
 the largest consumer on the board that has no effect on emulation speed and,
-unlike the clock and voltage, cannot destabilise anything.
+unlike the clock and voltage, cannot destabilise anything. Note that LED
+brightness is perceived roughly logarithmically while power tracks PWM duty
+linearly, so `BACKLIGHT=96` is about 38% of the current at 255 while looking
+only slightly dimmer - the saving is larger than it appears.
+
+Almost all of this is settable from `config.286` without rebuilding. Three
+things are not: the **boot** operating point (the config is read after the SD
+card mounts, so the machine must already boot at its compiled-in settings, and
+only `main()` sets voltage before raising the clock); the **instrumentation**
+builds (sweep, soak, `INT10_DEBUG`, `KBD_DEBUG`), which change code rather than
+values; and the **display and audio drivers**, which are linked in.
 
 #### `config.286`
 
@@ -463,6 +473,9 @@ line, applied **in file order** — so when lowering both, put `CPU` before
 | `VREG` | Core voltage, `vreg_voltage` enum ordinal (see `PICOCALC_VREG_VAL`). Prefer the build option for finding a floor. |
 | `BACKLIGHT` | Panel backlight, 0–255. Applied after `keyboard_init()`, which owns it. |
 | `KBD_BACKLIGHT` | Keyboard backlight, 0–255. |
+| `LCD_MHZ` | Panel bit rate, 10–120. No exact-divider constraint unlike PSRAM — a fractional PIO divider here costs jitter, not correctness — and it fails visibly (shearing, noise) rather than by corrupting, so it is clamped rather than refused. |
+| `STATUSBAR` | `1` shows a permanent stats bar across the top: clock, core voltage, PSRAM rate and error count, panel clock, fps, KIPS, backlight. It sits in the letterbox margin every mode leaves (40 rows in the worst case), so it costs no picture area. Rates are read back from the PIO dividers, not echoed from what was requested. |
+| `DEBUG_OVERLAY` | `1` paints `printf()` output over the bottom 80 rows, and enables the throughput line. This *does* cover picture. |
 | `PSRAM_SPI` | PSRAM **SPI bit rate** in MHz — the number the sweep build prints, half the state-machine clock. Ignored, with a message, unless it divides the system clock exactly. |
 | `PSRAM_FUDGE` | `0` or `1`; pairs with the rate, see `PSRAM_FUDGE_VAL`. |
 | `FLASH` | Flash clock **cap** in MHz, not the clock: the actual rate is `cpu_mhz / ceil(cpu_mhz / FLASH)`. |

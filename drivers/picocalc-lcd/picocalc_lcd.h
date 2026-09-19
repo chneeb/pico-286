@@ -69,6 +69,23 @@ void refresh_lcd(void);
 // Set by graphics_init() on core1 once the panel is up and blanked.
 extern volatile bool picocalc_lcd_ready;
 
+// Paint printf() output over the bottom 80 rows. Settable at runtime so a
+// board can be diagnosed without building and flashing a separate firmware.
+extern volatile bool picocalc_lcd_overlay;
+
+// Panel bit rate in Hz; must be set before graphics_init() runs on core1.
+// Above the ILI9488's nominal 66 MHz the failure mode is visible artefacts,
+// not corruption, so this is clamped rather than validated.
+extern uint32_t picocalc_lcd_max_hz;
+
+// Permanent stats bar across the top of the panel. It sits in the letterbox
+// margin that every mode leaves (40 rows in the worst case), so it costs no
+// picture area.
+extern volatile bool picocalc_lcd_statusbar;
+
+// Set the bar's text, up to TEXTMODE_COLS characters; repainted only on change.
+void picocalc_lcd_set_status(const char *text);
+
 // Frames pushed to the panel since boot.
 extern volatile uint32_t picocalc_lcd_frames;
 

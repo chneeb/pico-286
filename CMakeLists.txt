@@ -132,17 +132,18 @@ else ()
     # Core voltage as the hardware_vreg enum ordinal, NOT volts:
     # 11=1.10 12=1.15 13=1.20 14=1.25 15=1.30 (SDK max) 19=1.60 (upstream default).
     set(PICOCALC_VREG_VAL "19" CACHE STRING "Core voltage, vreg_voltage enum ordinal")
-    # The KIPS/fps heartbeat and a trace compete for the same 10-row debug
-    # buffer, so it defaults off whenever a trace build is selected. An
-    # explicit -DPICOCALC_PERF_OVERLAY=ON on the command line still wins.
-    # It is only ever visible when the overlay is painted at all, i.e. in a
-    # bring-up build, so that - minus the trace builds - is the default.
-    if (PICOCALC_BRINGUP AND NOT PICOCALC_INT10_DEBUG AND NOT PICOCALC_KBD_DEBUG)
-        set(_picocalc_perf_default ON)
-    else ()
+    # Whether the KIPS/fps heartbeat is COMPILED IN. Whether it is shown is a
+    # runtime decision (config.286's DEBUG_OVERLAY), so this defaults on and
+    # only needs turning off to reclaim the handful of instructions the
+    # instruction counter costs in the emulation loop. It is suppressed for the
+    # trace builds, which would otherwise compete with a trace for the same
+    # 10-row buffer.
+    if (PICOCALC_INT10_DEBUG OR PICOCALC_KBD_DEBUG)
         set(_picocalc_perf_default OFF)
+    else ()
+        set(_picocalc_perf_default ON)
     endif ()
-    option(PICOCALC_PERF_OVERLAY "PicoCalc: KIPS/fps heartbeat in the debug overlay" ${_picocalc_perf_default})
+    option(PICOCALC_PERF_OVERLAY "PicoCalc: compile in the KIPS/fps heartbeat" ${_picocalc_perf_default})
     # Device-verified operating point: 198 MHz SM = 99 MHz SPI with the fudge
     # PIO program, soak-tested clean (0 errors, ~5.0 MB/s) on PicoCalc hardware.
     # These two are coupled: psram_spi.pio documents the fudge variant as

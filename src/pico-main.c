@@ -744,6 +744,17 @@ static int cfg_kbd_backlight = -1;
 // before init_psram(), which is what reads the operating point.
 static int cfg_psram_spi_mhz = -1;
 
+// Paint printf() output (and the throughput line) over the bottom of the
+// panel: 1 on, 0 off, -1 to keep the build-time default.
+static int cfg_debug_overlay = -1;
+
+// Permanent stats bar across the top: 1 on, 0 off (the default).
+static int cfg_statusbar = -1;
+
+// Panel bit rate in MHz, or -1 for the build-time value. Applied before core1
+// starts, since graphics_init() reads it there.
+static int cfg_lcd_mhz = -1;
+
 static void load_config_286() {
     UINT br;
     char* buff = open_config(&br);
@@ -780,6 +791,18 @@ static void load_config_286() {
                 t = next_token(t);
                 const int f = atoi(t);
                 if (f == 0 || f == 1) psram_fudge = (uint8_t) f;
+            } else if (strcmp(t, "LCD_MHZ") == 0) {
+                t = next_token(t);
+                const int mhz = atoi(t);
+                // 10 MHz is unusably slow, 120 is far past anything the panel
+                // has shown it can take; outside that it is a typo.
+                if (mhz >= 10 && mhz <= 120) cfg_lcd_mhz = mhz;
+            } else if (strcmp(t, "STATUSBAR") == 0) {
+                t = next_token(t);
+                cfg_statusbar = atoi(t) ? 1 : 0;
+            } else if (strcmp(t, "DEBUG_OVERLAY") == 0) {
+                t = next_token(t);
+                cfg_debug_overlay = atoi(t) ? 1 : 0;
             } else if (strcmp(t, "BACKLIGHT") == 0) {
                 t = next_token(t);
                 const int v = atoi(t);
@@ -1010,6 +1033,9 @@ int main(void) {
 #ifdef PICOCALC
     if (cfg_backlight >= 0) picocalc_lcd_set_backlight((uint8_t) cfg_backlight);
     if (cfg_kbd_backlight >= 0) picocalc_kbd_set_backlight((uint8_t) cfg_kbd_backlight);
+    if (cfg_debug_overlay >= 0) picocalc_lcd_overlay = cfg_debug_overlay;
+    if (cfg_statusbar >= 0) picocalc_lcd_statusbar = cfg_statusbar;
+    if (cfg_lcd_mhz > 0) picocalc_lcd_max_hz = (uint32_t) cfg_lcd_mhz * MHZ;
 #endif
 
     // Check for mouse availability
@@ -1122,6 +1148,7 @@ int main(void) {
 #endif
 
 #if PICOCALC_PERF_OVERLAY
+    uint64_t bat_last = time_us_64();
     uint64_t perf_last = time_us_64();
     uint64_t perf_instr = 0;
     uint32_t perf_frames0 = picocalc_lcd_frames;
@@ -1156,14 +1183,56 @@ int main(void) {
         // `tormoz` instructions per call, so this is emulated KIPS; on a healthy
         // build it should be in the thousands, and the frame rate tells us
         // whether core1's panel pushes are the thing holding core0 back.
+        // The battery gauge lives on the keyboard MCU and a read blocks for
+        // 16 ms (kbd_read_reg16's settle), which is long enough to be felt in
+        // the emulation loop - so it is read on a slow cadence and only while
+        // the overlay is actually being shown. The raw 16-bit register is
+        // printed alongside the decoded low byte because the MCU firmware's
+        // exact encoding varies between PicoCalc keyboard builds; whichever
+        // half moves is the one that means something on this board.
+        const uint64_t bat_now = time_us_64();
+        if (picocalc_lcd_overlay && bat_now - bat_last >= 30000000) {
+            bat_last = bat_now;
+            const int b = picocalc_read_battery();
+            if (b < 0) printf("BAT read failed\n");
+            else printf("BAT %04X lo=%u hi=%u\n",
+                        (unsigned) b, (unsigned) (b & 0xFF), (unsigned) ((b >> 8) & 0xFF));
+        }
+
         const uint64_t perf_now = time_us_64();
-        if (perf_now - perf_last >= 2000000) {
+        if ((picocalc_lcd_overlay || picocalc_lcd_statusbar)
+            && perf_now - perf_last >= 2000000) {
             const uint32_t frames = picocalc_lcd_frames - perf_frames0;
             const uint64_t instr = perf_instr;
             // CS:IP says *where* the emulated CPU is. A stable CS=F000 with a
             // slowly-advancing IP is the BIOS grinding through something (the
             // POST memory test walks all 640 KB, and everything above the
             // 176 KB SRAM window is a PIO-SPI PSRAM transaction per access).
+            // The bar carries the settings that are otherwise invisible and
+            // easy to get half-applied: clock, voltage and PSRAM rate are one
+            // interdependent setting, and a config file that only partly took
+            // looks exactly like one that worked - until something corrupts.
+            if (picocalc_lcd_statusbar) {
+                static const char *const volts[] = {
+                    "1.10", "1.15", "1.20", "1.25", "1.30",
+                    "1.35", "1.40", "1.50", "1.60"
+                };
+                const int vi = vreg - VREG_VOLTAGE_1_10;
+                char line[TEXTMODE_COLS + 1];
+                snprintf(line, sizeof line,
+                         "%luMHz %sV PS%lu e%lu LCD%lu %lufps %luK BL%d",
+                         (unsigned long) cpu_mhz,
+                         (vi >= 0 && vi < (int) (sizeof volts / sizeof *volts))
+                             ? volts[vi] : "?",
+                         (unsigned long) psram_achieved_spi_mhz(),
+                         (unsigned long) psram_errors,
+                         (unsigned long) picocalc_lcd_achieved_mhz(),
+                         (unsigned long) (frames * 1000000ull / (perf_now - perf_last)),
+                         (unsigned long) (instr / (perf_now - perf_last)),
+                         cfg_backlight >= 0 ? cfg_backlight : 255);
+                picocalc_lcd_set_status(line);
+            }
+            if (picocalc_lcd_overlay)
             printf("%lu KIPS %lu fps@%luMHz %04X:%04X PS %luMHz e=%lu\n",
                    (unsigned long) (instr / (perf_now - perf_last) * 1000),
                    (unsigned long) (frames * 1000000ull / (perf_now - perf_last)),
