@@ -502,105 +502,130 @@ line, applied **in file order** — so when lowering both, put `CPU` before
 | `FLASH_T`, `PSRAM_T` | Raw QMI timing registers, hex. |
 | `PSRAM` | QMI-attached PSRAM rate — **does nothing on the PicoCalc**, which has no QMI PSRAM and uses the PIO driver. Use `PSRAM_SPI`. |
 
-##### Three working profiles
+##### Four working profiles
 
-All three assume the firmware was built for the **300 MHz operating point**:
-
-```
--DPICOCALC_CPU_FREQ_MHZ=300 -DPSRAM_SM_CLOCK_VAL=150000000 \
--DPSRAM_FUDGE_VAL=0 -DPICOCALC_VREG_VAL=15
-```
-
-That matters because `config.286` only ever adjusts the machine *away from* its
-compiled-in boot state, and the flash divisor in particular is fixed at boot
-from the built-in clock. On a firmware built for a different clock these
-profiles do not transfer.
-
-**Low — 240 MHz.** Lowering only, so no `VREG` line is needed and flash follows
-the clock down on its boot divisor (240/3 = 80 MHz) with no help.
+These assume the firmware was built for the **396 MHz operating point**, which
+is the default — no extra options:
 
 ```
-CPU=240
-PSRAM_SPI=60
-PSRAM_FUDGE=0
-BACKLIGHT=64
-STATUSBAR=1
+cmake -DCMAKE_BUILD_TYPE=Release -DPICO_PLATFORM=rp2350 \
+      -DENABLE_PICOCALC=ON -DENABLE_PWM_SOUND=ON
 ```
 
-**Medium — 300 MHz.** The build's own settings; nothing needs overriding.
+Build for 396 even if you intend to run slower, because the flash divisor is
+fixed at boot from the built-in clock: `ceil(396/100) = 4` happens to land
+flash correctly at *every* clock from 240 to 396, so no profile needs a `FLASH`
+line. A 300 MHz build gets divisor 3, which is only safe up to 300 MHz.
+
+**Max — 396 MHz.** The build's own state; nothing needs overriding.
 
 ```
 BACKLIGHT=96
 STATUSBAR=1
 ```
 
-**High — 360 MHz.** Raising the clock, so the order matters in two ways.
-`FLASH=75` comes *before* `CPU` deliberately: it enlarges the divisor to 4
-while still at 300 MHz (giving 75 MHz), so that when the clock goes to 360 the
-flash lands at 90 MHz. Without it the boot divisor of 3 would put flash at
-120 MHz the instant the clock changed — and the config parser itself is
-executing from flash at that moment.
+**High — 360 MHz.**
 
 ```
-VREG=15
-FLASH=75
 CPU=360
+VREG=15
 PSRAM_SPI=90
 PSRAM_FUDGE=1
 BACKLIGHT=96
 STATUSBAR=1
 ```
 
-**Max — 396 MHz (stock).** The upstream operating point, and the only one that
-needs the core voltage raised: 396 MHz does not run at 1.30 V here, so `VREG`
-comes first and the clock follows once the regulator has settled. `FLASH=75` is
-needed for the same reason as in High, and lands flash at exactly the 99 MHz the
-stock build uses. Roughly double Medium's core power — V² is doing most of that,
-not the 96 MHz of extra clock.
+**Medium — 300 MHz.**
 
 ```
-VREG=19
-FLASH=75
-CPU=396
-PSRAM_SPI=99
-PSRAM_FUDGE=1
+CPU=300
+VREG=15
+PSRAM_SPI=75
+PSRAM_FUDGE=0
 BACKLIGHT=96
+STATUSBAR=1
+```
+
+**Low — 240 MHz.**
+
+```
+CPU=240
+VREG=15
+PSRAM_SPI=60
+PSRAM_FUDGE=0
+BACKLIGHT=64
 STATUSBAR=1
 ```
 
 | | Low | Medium | High | Max |
 |---|---|---|---|---|
 | CPU | 240 MHz | 300 MHz | 360 MHz | 396 MHz |
-| Core voltage | 1.30 V | 1.30 V | 1.30 V | **1.60 V** |
+| Core voltage | 1.30 V | 1.30 V | 1.30 V | 1.60 V |
 | PSRAM SPI | 60 MHz | 75 MHz | 90 MHz | 99 MHz |
-| Flash | 80 MHz | 100 MHz | 90 MHz | 99 MHz |
-| Relative core power | 0.80 | 1.00 | 1.20 | **2.00** |
-| Verified | derived | **device-verified** | worked, not soaked | stock point, soaked |
+| Flash | 60 MHz | 75 MHz | 90 MHz | 99 MHz |
+| Relative core power | 0.80 | 1.00 | 1.20 | 2.00 |
+| Audio | stutters | stutters | stutters | **clean** |
+| Verified | derived | device-verified | device-verified | device-verified |
 
 Relative power is `(V/1.30)² x (f/300)`. Note how flat Low → High is against
 the jump to Max: within one voltage the cost is linear in clock, but Max pays
-`(1.60/1.30)² = 1.51` before a single extra megahertz is counted. That is the
-whole reason 300 MHz at 1.30 V is worth having.
+`(1.60/1.30)² = 1.51` before a single extra megahertz is counted.
 
-The PSRAM rate moves with the clock because the divider has to stay an exact
-integer, so each step costs or gains memory bandwidth as well as clock — and
-every guest RAM access is a PIO-SPI transaction, so memory-heavy software (SCI
-games especially) feels both.
+**Audio only behaves at 396 MHz.** PWM output is unbuffered and paced by how
+often core1 calls the pump, so every profile below Max trades sound quality for
+battery. That is a bug, not a law — see the PWM audio known issue — and fixing
+it properly would decouple the two.
 
-Two cautions. **Low is derived, not tested** — it is strictly less stressful
-than Medium in every dimension (lower clock, flash and PSRAM at the same
-voltage), so it should be safe, but it has not been run. Dropping `VREG=13`
-(1.20 V) on top would roughly double its saving and is the obvious next
-experiment, though no voltage below 1.30 V has yet worked at any clock here.
-**High has not been soaked** — 90 MHz SPI with fudge 1 at 1.30 V is a
-combination the sweep covered but nothing has run for long, and PSRAM failure
-corrupts quietly. Watch `e0` in the status bar.
+##### Order matters, and getting it wrong can hang
 
-Max's PSRAM point (99 MHz, fudge 1) is the one that *was* soaked clean at
-~5.0 MB/s, but it was soaked with 1.60 V applied at boot rather than raised
-underneath a running core, which is what this profile does. The order here is
-the safe one — voltage up, settle, then clock — but it is not the same path
-that was tested.
+`CPU` and `VREG` are applied as the file is parsed, in file order:
+
+- **Lowering** (all three profiles above): `CPU` first, then `VREG`.
+- **Raising**: `VREG` first, then `CPU`.
+
+This is not stylistic. From a 396 MHz build, putting `VREG=15` before `CPU=360`
+means momentarily running 396 MHz at 1.30 V, which hangs on this board. The
+other keys — `PSRAM_SPI`, `PSRAM_FUDGE`, `BACKLIGHT`, `LCD_MHZ`, `STATUSBAR`,
+`DEBUG_OVERLAY` — are deferred and can go anywhere.
+
+##### On a 300 MHz build instead
+
+If the firmware was built with `-DPICOCALC_CPU_FREQ_MHZ=300
+-DPSRAM_SM_CLOCK_VAL=150000000 -DPSRAM_FUDGE_VAL=0 -DPICOCALC_VREG_VAL=15`, the
+profiles change in two ways:
+
+- **Medium needs no config at all** — it is that build's own state.
+- **High and Max must add `FLASH=75` before `CPU`**, and reverse the
+  `CPU`/`VREG` order because they are now raising rather than lowering. Without
+  the `FLASH` line the boot divisor of 3 puts flash at 120 MHz (at 360) or
+  132 MHz (at 396) the instant the clock changes — while the config parser
+  itself is executing from flash. With it, `ceil(300/75) = 4` and flash lands
+  at the same 90 and 99 MHz the 396 build reaches with no `FLASH` line at all.
+
+So the 300 build is not slower, just more error-prone: two extra things to get
+right per profile, one of which hangs the machine if the order is wrong. That,
+plus 396 being the only clock with clean audio, is the reason to build for 396
+and scale down rather than build for 300 and scale up.
+
+##### Does the 396 build always draw more power?
+
+No. Power follows the running state, not the baked default: the 396 build with
+`CPU=300 VREG=15` draws what a 300 MHz build does at the same settings. If
+anything it draws marginally less, because its flash divisor of 4 gives 75 MHz
+at 300 MHz where a 300 MHz build's divisor of 3 gives 100 MHz.
+
+Two real differences remain, both about what happens before or instead of the
+config being applied:
+
+- **A brief window at boot.** `config.286` is read after the SD card mounts, so
+  the machine runs at 396 MHz and 1.60 V for the second or so before that.
+  Irrelevant to battery life, but it is not nothing.
+- **The failure default.** A missing, unreadable or mistyped config leaves a
+  396 build at full clock and 1.60 V indefinitely, where a 300 build would sit
+  at its efficient point. That is the genuine cost of this choice, and it is
+  accepted because 396 MHz is currently the only configuration with clean
+  audio.
+
 
 Every boot prints the PSRAM operating point actually in effect, and says so
 loudly if the divider is not exact:
