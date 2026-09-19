@@ -724,6 +724,24 @@ fix for anything observed**: the one game suspected of it turned out to request
   engaged (the dangerous case, since a correctness-only test would pass it),
   ~18 MB/s with errors means the extra lines are not working, and ~18 MB/s
   clean means it works.
+- **An SRAM cache in front of the PIO PSRAM is probably worth more than QPI.**
+  Memory-mapped PSRAM, as on the Pimoroni Pico Plus 2, is not available here:
+  the RP2350's QMI owns the dedicated QSPI pads and only the chip select is a
+  free GPIO (`gpio_set_function(cs_pin, GPIO_FUNC_XIP_CS1)` in `psram_init()`).
+  Pimoroni wires its PSRAM onto those pads; the PicoCalc wires its to ordinary
+  GPIOs, so QMI cannot reach it and no software change puts it in the address
+  map. Every access stays a call into the driver rather than a load/store.
+
+  What that costs is not only bandwidth but the **XIP cache**, which serves
+  repeat accesses to hot memory with no bus traffic at all. A small SRAM cache
+  in front of `read86_mp`/`write86_mp` is the software equivalent, and it
+  compounds with QPI rather than competing: a QPI 32-bit access is 22 cycles of
+  which only 8 are data, so the per-transaction overhead actually grows as a
+  fraction, and anything that turns many small accesses into occasional bursts
+  amortises it. Since every guest memory access above the SRAM window goes
+  through this path, a cache plausibly beats QPI on its own — and unlike QPI it
+  does not depend on GP4/GP5 being sound.
+
 - **Measured PSRAM operating points on PicoCalc hardware** (396 MHz system clock,
   random 32-bit accesses — not bulk DMA, so these are lower than a sequential
   figure):
