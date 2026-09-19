@@ -127,7 +127,11 @@ else ()
     # perf counter, so the 10-line overlay is entirely key traffic. Implies the
     # bring-up overlay, since that is what renders it.
     option(PICOCALC_KBD_DEBUG "PicoCalc: raw keyboard event logging" OFF)
+    set(PICOCALC_CPU_FREQ_MHZ "" CACHE STRING "PicoCalc CPU clock in MHz; empty = 396. Must divide PSRAM_SM_CLOCK_VAL exactly.")
     option(PICOCALC_INT10_DEBUG "PicoCalc: log int 10h calls the emulator does not handle" OFF)
+    # Core voltage as the hardware_vreg enum ordinal, NOT volts:
+    # 11=1.10 12=1.15 13=1.20 14=1.25 15=1.30 (SDK max) 19=1.60 (upstream default).
+    set(PICOCALC_VREG_VAL "19" CACHE STRING "Core voltage, vreg_voltage enum ordinal")
     # The KIPS/fps heartbeat and a trace compete for the same 10-row debug
     # buffer, so it defaults off whenever a trace build is selected. An
     # explicit -DPICOCALC_PERF_OVERLAY=ON on the command line still wins.
@@ -189,7 +193,26 @@ else ()
         endif ()
         # The stock 500 MHz is above what the PicoCalc's PSRAM wiring has been
         # shown to take; 396 MHz is a conservative starting point.
-        set(CPU_FREQ_MHZ "396")
+        #
+        # 396 also divides the PSRAM state-machine clock exactly (396/198 = 2).
+        # That divider is a float fed to a 16.8 fixed-point PIO divider, and a
+        # fractional value makes PIO dither the cycle length rather than divide
+        # evenly - which this driver, whose reliability is a sampling-phase
+        # problem, cannot tolerate. So a different CPU clock needs a matching
+        # PSRAM_SM_CLOCK_VAL, e.g. 300 MHz with 150000000 (and PSRAM_FUDGE_VAL=0,
+        # since fudge is only for SPI above 83 MHz).
+        if (NOT PICOCALC_CPU_FREQ_MHZ STREQUAL "")
+            set(CPU_FREQ_MHZ "${PICOCALC_CPU_FREQ_MHZ}")
+        else ()
+            set(CPU_FREQ_MHZ "396")
+        endif ()
+        math(EXPR _psram_rem "${CPU_FREQ_MHZ} * 1000000 % ${PSRAM_SM_CLOCK_VAL}")
+        if (NOT _psram_rem EQUAL 0)
+            message(WARNING
+                "CPU ${CPU_FREQ_MHZ} MHz does not divide PSRAM_SM_CLOCK_VAL "
+                "${PSRAM_SM_CLOCK_VAL} exactly - the PIO divider will dither and "
+                "PSRAM is likely to be unreliable.")
+        endif ()
         message(STATUS "PicoCalc enabled - CPU frequency set to ${CPU_FREQ_MHZ} MHz")
         math(EXPR DISPLAY_COUNT "${DISPLAY_COUNT} + 1")
     endif ()
@@ -436,6 +459,7 @@ else ()
                 $<$<BOOL:${PICOCALC_PSRAM_SOAK}>:PICOCALC_PSRAM_SOAK>
                 $<$<BOOL:${PICOCALC_KBD_DEBUG}>:PICOCALC_KBD_DEBUG>
                 $<$<BOOL:${PICOCALC_INT10_DEBUG}>:PICOCALC_INT10_DEBUG>
+                DEFAULT_VREG_VOLTAGE=${PICOCALC_VREG_VAL}
                 PICOCALC_PERF_OVERLAY=$<IF:$<BOOL:${PICOCALC_PERF_OVERLAY}>,1,0>
                 PWM_BEEPER=28 PWM_LEFT_CHANNEL=26 PWM_RIGHT_CHANNEL=27
                 CLOCK_PIN=22 PCM_PIN=22

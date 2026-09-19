@@ -345,10 +345,12 @@ rewritten — the filesystem itself is LBA-linear and does not move.
 | `PICOCALC_SD_CLK_HZ` | `30000000` | SD bus clock. Safe by construction: the card is negotiated at 100 kHz and only then switched, so one that cannot sustain the rate fails visibly at mount rather than corrupting data. Drop to `12500000` (tiny_agi's rate) if a card misbehaves. |
 | `PICOCALC_INT10_DEBUG` | `OFF` | Print per-function `int 10h` call counts (deltas, every 3 s) to the debug overlay, marking each as implemented here or passed to the ROM BIOS. For finding BIOS video calls a guest uses that this emulator does not implement. |
 | `PICOCALC_PERF_OVERLAY` | on for `PICOCALC_BRINGUP`, else off | The KIPS/fps heartbeat in the debug overlay. Defaults off for the trace builds, which otherwise compete with it for the same 10-row buffer. |
+| `PICOCALC_CPU_FREQ_MHZ` | empty (= 396) | PicoCalc CPU clock. Must divide `PSRAM_SM_CLOCK_VAL` exactly; CMake warns if it does not. Device-verified: **300 MHz with `PSRAM_SM_CLOCK_VAL=150000000` and `PSRAM_FUDGE_VAL=0`** (75 MHz SPI). |
+| `PICOCALC_VREG_VAL` | `19` (1.60 V) | Core voltage as the `vreg_voltage` enum **ordinal, not volts**: 11=1.10, 12=1.15, 13=1.20, 14=1.25, 15=1.30 (the SDK's `VREG_VOLTAGE_MAX`), 19=1.60. Applied before the clock ramps, which is the safe order — see below. Device-verified: **15 (1.30 V) at 300 MHz**; 1.30 V at 396 MHz hangs. |
 | `PICOCALC_PSRAM_SWEEP` | `OFF` | One-shot measuring build. Sweeps PSRAM over (divisor x fudge), prints a table of SPI rate / errors / throughput, then stops — it does not boot the emulator. Use it to pick `PSRAM_SM_CLOCK_VAL` and `PSRAM_FUDGE_VAL` for a board, then rebuild normally. |
 | `PICOCALC_PSRAM_SOAK` | `OFF` | Soak build. Hammers the *configured* operating point and reports a running error total, so a candidate divisor can be checked over minutes and as the board warms, not just for one 256 KB pass. |
 | `PSRAM_FUDGE_VAL` | `1` | PSRAM PIO program: `1` selects the variant with the extra read-sync cycle, which `psram_spi.pio` documents as required for reads above **83 MHz** SPI. It pairs with the clock and is **not independently tunable** — below 83 MHz the fudge lands wrong and the bus is dead, so lowering `PSRAM_SM_CLOCK_VAL` below 166000000 requires setting this to `0` as well. |
-| `PSRAM_SM_CLOCK_VAL` | `198000000` | PIO state-machine clock for PSRAM; the SPI rate is half this (99 MHz), and the divisor is derived from the system clock so the rate holds if `CPU_FREQ_MHZ` changes. Device-verified: soak-tested clean at 0 errors and ~5.0 MB/s, which is 1.9x the 50 MHz point. Reliability is a sampling-phase problem that fails at both faster *and* slower settings, so re-derive it with `PICOCALC_PSRAM_SWEEP` rather than guessing, and confirm with `PICOCALC_PSRAM_SOAK` before trusting it. |
+| `PSRAM_SM_CLOCK_VAL` | `198000000` | PIO state-machine clock for PSRAM; the SPI rate is half this (99 MHz). The divisor is derived from the system clock, so this rate holds across a `CPU_FREQ_MHZ` change **only if the system clock is an exact integer multiple of it** — 396/198 = 2 exactly. A fractional result is not a rounding error but a dithering PIO divider (see *Clock, voltage and PSRAM are one setting* below), so a different CPU clock needs a matching value here. CMake warns at configure time if they do not divide. Device-verified: soak-tested clean at 0 errors and ~5.0 MB/s, which is 1.9x the 50 MHz point. Reliability is a sampling-phase problem that fails at both faster *and* slower settings, so re-derive it with `PICOCALC_PSRAM_SWEEP` rather than guessing, and confirm with `PICOCALC_PSRAM_SOAK` before trusting it. |
 
 #### Verifying a build option actually applied
 
@@ -401,6 +403,79 @@ Tracing this needs `-DPICOCALC_INT10_DEBUG=ON`, which prints per-function
 AH as implemented here (`*`) or handed to the ROM BIOS (`x`). Counts as deltas
 rather than a one-shot "first seen" log is the point: a call made on every
 repaint and a call made once at startup are indistinguishable in the latter.
+
+#### Clock, voltage and PSRAM are one setting, not three
+
+The stock 1.60 V comes from upstream, which targets 500 MHz. It is well above
+the SDK's `VREG_VOLTAGE_MAX` of 1.30 V — `main()` has to call
+`vreg_disable_voltage_limit()` to reach it — and it is the dominant term in
+power draw, since dynamic power goes as V²f.
+
+Measured on the device, the three settings are not independent:
+
+| CPU | Core V | PSRAM SPI | Result |
+|---|---|---|---|
+| 396 MHz | 1.60 V | 99 MHz | stock; works |
+| 396 MHz | 1.30 V | 99 MHz | hangs, with or without a slower flash |
+| 396 MHz | 1.20 V | 99 MHz | does not start |
+| 300 MHz | 1.30 V | 75 MHz | **works** — roughly half the core dynamic power |
+
+Three things are worth knowing before changing any of them.
+
+**The PSRAM divider must be exact.** `init_psram()` computes
+`clkdiv = clk_sys / PSRAM_SM_CLOCK_HZ` and hands it to a 16.8 fixed-point PIO
+divider. A fractional value does not divide evenly — PIO dithers the cycle
+length — and this bus fails on sampling phase, so it corrupts. 396/198 = 2
+exactly; 300/198 = 1.515 does not, and shows up as a system error during the
+BIOS memory test with nothing anywhere naming PSRAM. At 300 MHz the only sane
+exact divider is ÷2, giving 75 MHz SPI, which is why dropping the CPU clock
+costs memory bandwidth as well: every guest RAM access is a PIO-SPI transaction
+(`read86_mp`/`write86_mp`), so memory-heavy software takes both cuts.
+Both the build (CMake warning) and the runtime (a boot-time check) now refuse
+or flag a non-exact combination instead of letting it corrupt silently.
+
+**Voltage must be lowered before the clock is raised, not after.** `main()`
+sets the voltage, waits 100 ms for the regulator, and only then calls
+`set_sys_clock_hz()`. Lowering it from `config.286` happens long after the core
+is already at full clock, so the regulation transient occurs at maximum load —
+a config-file test can hang where the same steady-state voltage would have been
+fine. Use `PICOCALC_VREG_VAL` to test a floor; `config.286` is for convenience
+once a value is known. (The config path now settles for 100 ms too.)
+
+**Flash does not get relief from a lower CPU clock.** `flash_timings()`
+recomputes `divisor = ceil(cpu_mhz / FLASH_FREQ_MHZ)` at boot rather than
+keeping the old one, so 396 MHz gives 99 MHz flash (÷4) and 300 MHz gives
+100 MHz (÷3) — marginally *faster*.
+
+The lever that costs nothing is the panel backlight (`BACKLIGHT` below). It is
+the largest consumer on the board that has no effect on emulation speed and,
+unlike the clock and voltage, cannot destabilise anything.
+
+#### `config.286`
+
+Read from `/config.286` or `/xt/config.286` on the SD card, one `KEY=VALUE` per
+line, applied **in file order** — so when lowering both, put `CPU` before
+`VREG`.
+
+| Key | Meaning |
+|---|---|
+| `CPU` | System clock in MHz. Must divide the PSRAM state-machine clock exactly, or PSRAM corrupts — a stale line here from another build is the easiest way to break a working setup. |
+| `VREG` | Core voltage, `vreg_voltage` enum ordinal (see `PICOCALC_VREG_VAL`). Prefer the build option for finding a floor. |
+| `BACKLIGHT` | Panel backlight, 0–255. Applied after `keyboard_init()`, which owns it. |
+| `KBD_BACKLIGHT` | Keyboard backlight, 0–255. |
+| `PSRAM_SPI` | PSRAM **SPI bit rate** in MHz — the number the sweep build prints, half the state-machine clock. Ignored, with a message, unless it divides the system clock exactly. |
+| `PSRAM_FUDGE` | `0` or `1`; pairs with the rate, see `PSRAM_FUDGE_VAL`. |
+| `FLASH` | Flash clock **cap** in MHz, not the clock: the actual rate is `cpu_mhz / ceil(cpu_mhz / FLASH)`. |
+| `FLASH_T`, `PSRAM_T` | Raw QMI timing registers, hex. |
+| `PSRAM` | QMI-attached PSRAM rate — **does nothing on the PicoCalc**, which has no QMI PSRAM and uses the PIO driver. Use `PSRAM_SPI`. |
+
+Every boot prints the PSRAM operating point actually in effect, and says so
+loudly if the divider is not exact:
+
+```
+PSRAM 75 MHz SPI fudge 0
+** PSRAM DIVIDER NOT EXACT - EXPECT CORRUPTION **
+```
 
 #### Notes for future work
 
