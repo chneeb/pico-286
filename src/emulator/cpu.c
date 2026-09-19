@@ -671,13 +671,35 @@ void intcall86(uint8_t intnum) {
                             return;
                         }
                         case 0x12: {
-                            // set block of DAC color registers               VGA
+                            // Set a block of DAC colour registers (VGA). BX is
+                            // the first register, CX a COUNT - and it can
+                            // legitimately be 256, for "load the whole palette".
+                            //
+                            // The end index used to be computed as
+                            // ((BX + CX) & 0xFF), so a program loading all 256
+                            // entries in one call got an end index of 0 and had
+                            // its palette silently ignored, leaving whatever was
+                            // in the DAC before.
+                            uint32_t first = CPU_BX;
+                            uint32_t count = CPU_CX;
+                            if (first > 255) return;
+                            if (count > 256 - first) count = 256 - first;
+
                             uint32_t memloc = CPU_ES * 16 + CPU_DX;
-                            for (int color_index = CPU_BX; color_index < ((CPU_BX + CPU_CX) & 0xFF); color_index++) {
-                                vga_palette[color_index] = rgb((read86(memloc++) << 2), (read86(memloc++) << 2),
-                                                               (read86(memloc++) << 2));
+                            for (uint32_t i = 0; i < count; i++) {
+                                // Read into locals first. The three reads used
+                                // to sit in one rgb() expression as
+                                // read86(memloc++) x3, where neither the order
+                                // of evaluation nor the sequencing of memloc is
+                                // defined by the language - it happens to come
+                                // out right on this compiler, which is not a
+                                // reason to keep it.
+                                const uint8_t r = read86(memloc++);
+                                const uint8_t g = read86(memloc++);
+                                const uint8_t b = read86(memloc++);
+                                vga_palette[first + i] = rgb(r << 2, g << 2, b << 2);
 #if PICO_ON_DEVICE
-                                graphics_set_palette(color_index, vga_palette[color_index]);
+                                graphics_set_palette(first + i, vga_palette[first + i]);
 #endif
                             }
                             return;
@@ -691,12 +713,29 @@ void intcall86(uint8_t intnum) {
                             return;
                         }
                         case 0x17: {
-                            // Read a Block of DAC Color Registers
+                            // Read a block of DAC colour registers.
+                            //
+                            // This wrote the three components in the wrong
+                            // order: rgb() packs red at bit 16, so >>18 is red
+                            // and >>2 is blue, and blue was being written first.
+                            // Software that saves the palette here and restores
+                            // it through AL=12h - the usual way to do a fade -
+                            // therefore got red and blue swapped on the way
+                            // back, which is why one VGA game could look colour
+                            // inverted while another was fine.
+                            //
+                            // Same count handling as AL=12h above.
+                            uint32_t first = CPU_BX;
+                            uint32_t count = CPU_CX;
+                            if (first > 255) return;
+                            if (count > 256 - first) count = 256 - first;
+
                             uint32_t memloc = CPU_ES * 16 + CPU_DX;
-                            for (int color_index = CPU_BX; color_index < ((CPU_BX + CPU_CX) & 0xFF); color_index++) {
-                                write86(memloc++, ((vga_palette[color_index] >> 2)) & 63);
-                                write86(memloc++, ((vga_palette[color_index] >> 10)) & 63);
-                                write86(memloc++, ((vga_palette[color_index] >> 18)) & 63);
+                            for (uint32_t i = 0; i < count; i++) {
+                                const uint32_t c = vga_palette[first + i];
+                                write86(memloc++, (c >> 18) & 63);   // red
+                                write86(memloc++, (c >> 10) & 63);   // green
+                                write86(memloc++, (c >> 2) & 63);    // blue
                             }
                             return;
                         }
