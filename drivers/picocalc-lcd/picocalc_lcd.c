@@ -257,6 +257,22 @@ static inline void pack2(uint32_t *out, const uint16_t c0, const uint16_t c1) {
     *out = ((uint32_t) c0 << 16) | (uint32_t) c1;
 }
 
+// The debug overlay and the status bar are not part of the emulated screen, so
+// they must not colour themselves by writing into palette[] - that array is the
+// guest's own, and an index poked here is a colour the game loses. Overwriting
+// 0x0f with white made every pixel of colour 15 in a 256-colour game render
+// white: in Populous that is the sea.
+//
+// They get their own table instead, and pack through it.
+static uint16_t aux_palette[16];
+
+static void pack_line_320_aux(const uint8_t *idx, uint32_t *out) {
+    for (int i = 0; i < PICOCALC_LCD_WIDTH / 2; i++) {
+        pack2(out++, aux_palette[idx[0] & 0x0F], aux_palette[idx[1] & 0x0F]);
+        idx += 2;
+    }
+}
+
 static void pack_line_320(const uint8_t *idx, uint32_t *out) {
     for (int i = 0; i < PICOCALC_LCD_WIDTH / 2; i++) {
         pack2(out++, palette[idx[0]], palette[idx[1]]);
@@ -444,13 +460,13 @@ static void render_status_line(const uint glyph_line, uint8_t *out) {
 }
 
 static void paint_status_bar(uint8_t *idx_line, uint32_t *word_line0) {
-    palette[0x01] = panel565(0x000040u);
-    palette[0x0f] = panel565(0xFFFFFFu);
+    aux_palette[0x01] = panel565(0x000040u);
+    aux_palette[0x0f] = panel565(0xFFFFFFu);
     lcd_set_window(0, 0, PICOCALC_LCD_WIDTH, STATUSBAR_ROWS);
     start_pixels();
     for (uint row = 0; row < STATUSBAR_ROWS; row++) {
         render_status_line(row, idx_line);
-        pack_line_320(idx_line, word_line0);
+        pack_line_320_aux(idx_line, word_line0);
         send_words(word_line0, LINE_WORDS);
         while (dma_channel_is_busy(lcd_dma_chan)) {
             if (yield_enabled) lcd_yield();
@@ -677,15 +693,15 @@ void __time_critical_func(refresh_lcd)(void) {
     {
         const uint overlay_y = PICOCALC_LCD_HEIGHT - DEBUG_OVERLAY8_ROWS;
         // Blue background so it is unmistakably a text panel and not noise.
-        palette[1] = panel565(0x000080u);
-        palette[0x0a] = panel565(0x40FF40u);
-        palette[0x0c] = panel565(0xFF6060u);
-        palette[0x0f] = panel565(0xFFFFFFu);
+        aux_palette[1] = panel565(0x000080u);
+        aux_palette[0x0a] = panel565(0x40FF40u);
+        aux_palette[0x0c] = panel565(0xFF6060u);
+        aux_palette[0x0f] = panel565(0xFFFFFFu);
         lcd_set_window(0, overlay_y, PICOCALC_LCD_WIDTH, DEBUG_OVERLAY8_ROWS);
         start_pixels();
         for (uint row = 0; row < DEBUG_OVERLAY8_ROWS; row++) {
             render_debug_line8(row, idx_line);
-            pack_line_320(idx_line, word_line[cur]);
+            pack_line_320_aux(idx_line, word_line[cur]);
             send_words(word_line[cur], LINE_WORDS);
             cur ^= 1;
         }
