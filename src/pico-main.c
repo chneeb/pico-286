@@ -683,6 +683,17 @@ void __not_in_flash() psram_timings() {
     }
 }
 
+// The flash clock currently in effect: system clock over the QMI divisor as
+// programmed, not as flash_timings() would compute it now. Those differ
+// whenever the system clock changed after the divisor was set - which is what
+// a CPU= line in config.286 does.
+static uint32_t flash_achieved_mhz(void) {
+    const uint32_t div = (qmi_hw->m[0].timing & QMI_M0_TIMING_CLKDIV_BITS)
+                         >> QMI_M0_TIMING_CLKDIV_LSB;
+    if (!div) return 0;
+    return clock_get_hz(clk_sys) / div / MHZ;
+}
+
 static char* open_config(UINT* pbr) {
     FILINFO fileinfo;
     size_t file_size = 0;
@@ -1230,7 +1241,13 @@ int main(void) {
                     "1.10", "1.15", "1.20", "1.25", "1.30",
                     "1.35", "1.40", "1.50", "1.60"
                 };
-                const int vi = vreg - VREG_VOLTAGE_1_10;
+                // Read both back from hardware rather than reporting what
+                // was asked for. PSRAM and LCD already do this; CPU and
+                // voltage printed the variables, so a setting that failed to
+                // apply would still have been displayed as if it had. Given
+                // how many times in this port a value silently did not take,
+                // a status bar that echoes intent is worse than none.
+                const int vi = (int) vreg_get_voltage() - VREG_VOLTAGE_1_10;
                 // The battery byte: the PicoCalc keyboard MCU returns the
                 // percentage in the high byte, with bit 7 as a charging flag.
                 // That encoding differs between keyboard firmware builds, so
@@ -1245,12 +1262,19 @@ int main(void) {
                 }
                 char line[TEXTMODE_COLS + 1];
                 snprintf(line, sizeof line,
-                         "%luMHz %sV PS%lu e%lu LCD%lu %lufps %luK SB%lu BL%d%s%s",
-                         (unsigned long) cpu_mhz,
+                         "%luMHz %sV PS%lu e%lu F%lu LCD%lu %lufps %luK SB%lu BL%d%s%s",
+                         (unsigned long) (clock_get_hz(clk_sys) / MHZ),
                          (vi >= 0 && vi < (int) (sizeof volts / sizeof *volts))
                              ? volts[vi] : "?",
                          (unsigned long) psram_achieved_spi_mhz(),
                          (unsigned long) psram_errors,
+                         // Flash rate, derived from the QMI divisor actually
+                         // programmed rather than recomputed from cpu_mhz.
+                         // It is not set by any single config key - FLASH is a
+                         // cap, and the divisor is fixed at boot from the
+                         // built-in clock - so it is the one derived value
+                         // that cannot be predicted from reading config.286.
+                         (unsigned long) flash_achieved_mhz(),
                          (unsigned long) picocalc_lcd_achieved_mhz(),
                          (unsigned long) (frames * 1000000ull / (perf_now - perf_last)),
                          (unsigned long) (instr / (perf_now - perf_last)),
