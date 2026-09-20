@@ -333,6 +333,7 @@ something, e.g. `DOSSHELL` in text mode.
 | Mouse — CTMOUSE loads without Ctrl-Alt-M being touched | working |
 | Mouse — Ctrl-Alt-M pointer control | working (tested in a Sierra SCI game) |
 | VGA 256-colour palette, including save/restore fades | working |
+| VGA 256-colour games with `STATUSBAR=1` | working |
 | Audio (PWM) — AdLib/OPL2 | working, but stutters — see the known issue below |
 | Audio — PC speaker | working (routed through the mixer to GP26/27 rather than synthesised on `PWM_BEEPER`/GP28) |
 | Sierra AGI message/dialog text | working |
@@ -494,7 +495,7 @@ line, applied **in file order** — so when lowering both, put `CPU` before
 | `BACKLIGHT` | Panel backlight, 0–255. Applied after `keyboard_init()`, which owns it. |
 | `KBD_BACKLIGHT` | Keyboard backlight, 0–255. |
 | `LCD_MHZ` | Panel bit rate, 10–120. No exact-divider constraint unlike PSRAM — a fractional PIO divider here costs jitter, not correctness — and it fails visibly (shearing, noise) rather than by corrupting, so it is clamped rather than refused. |
-| `STATUSBAR` | `1` shows a permanent stats bar across the top: clock, core voltage, PSRAM rate and error count, panel clock, fps, KIPS, Sound Blaster rate in kHz, backlight, battery, and `MOUSE` while Ctrl-Alt-M mode is active. It sits in the letterbox margin every mode leaves (40 rows in the worst case), so it costs no picture area. Rates are read back from the PIO dividers, not echoed from what was requested. |
+| `STATUSBAR` | `1` shows a permanent stats bar across the top: clock, core voltage, PSRAM rate and error count, flash rate, panel clock, fps, KIPS, Sound Blaster rate in kHz, backlight, battery, and `MOUSE` while Ctrl-Alt-M mode is active. It sits in the letterbox margin every mode leaves (40 rows in the worst case), so it costs no picture area. **Every value is read back from hardware** — see below. |
 | `DEBUG_OVERLAY` | `1` paints `printf()` output over the bottom 80 rows, and enables the throughput line. This *does* cover picture. |
 | `PSRAM_SPI` | PSRAM **SPI bit rate** in MHz — the number the sweep build prints, half the state-machine clock. Ignored, with a message, unless it divides the system clock exactly. |
 | `PSRAM_FUDGE` | `0` or `1`; pairs with the rate, see `PSRAM_FUDGE_VAL`. |
@@ -626,6 +627,35 @@ config being applied:
   accepted because 396 MHz is currently the only configuration with clean
   audio.
 
+
+##### The status bar reports hardware, not intent
+
+```
+360MHz 1.30V PS90 e0 F90 LCD75 30fps 4312K SB45 BL96 B87%
+```
+
+Every figure is read back from the hardware that produces it rather than
+echoed from what the config asked for: the clock from `clock_get_hz(clk_sys)`,
+the voltage from `vreg_get_voltage()`, the PSRAM and panel rates from their PIO
+dividers, and the flash rate from the QMI divisor as programmed. That matters
+because this port has repeatedly had a setting silently fail to apply, and a
+bar that displayed intent would have hidden exactly the cases it exists to
+catch. Two of those were found this way: a build whose `PICOCALC_PERF_OVERLAY`
+was stale, and a `config.286` profile leaving flash at 120 MHz.
+
+Flash is the one worth watching. It is not set by any single key — `FLASH` is a
+cap, the divisor is fixed at boot from the built-in clock, and a `CPU` line
+changes the clock without recomputing it — so `F` is the only way to know the
+rate. On a 300 MHz build running `CPU=360` with no `FLASH` line it reads
+**F120**, which is above the configured cap and past the `rxdelay`
+calibration.
+
+**Diagnostics never borrow the guest's palette.** The bar and the debug overlay
+have their own 16-entry table. They originally coloured themselves by writing
+`palette[]` directly, which is the array the emulated screen is drawn through —
+so `palette[0x0f] = white` meant every pixel of colour 15 in a 256-colour game
+rendered white and never recovered. In Populous that was the sea. Anything
+painted over the emulated screen has to bring its own colours.
 
 Every boot prints the PSRAM operating point actually in effect, and says so
 loudly if the divider is not exact:
