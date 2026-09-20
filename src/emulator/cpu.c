@@ -697,7 +697,15 @@ void intcall86(uint8_t intnum) {
                                 const uint8_t r = read86(memloc++);
                                 const uint8_t g = read86(memloc++);
                                 const uint8_t b = read86(memloc++);
-                                vga_palette[first + i] = rgb(r << 2, g << 2, b << 2);
+                                // Mask to 6 bits, as AL=10h does. A DAC value
+                                // is 6 bits; without the mask r << 2 reaches
+                                // 1020 and overflows out of rgb()'s red byte,
+                                // so a program that leaves junk in the top two
+                                // bits gets a far brighter colour than it asked
+                                // for. Defensive - no guest has been seen to
+                                // need it - but AL=10h masks and this did not.
+                                vga_palette[first + i] =
+                                    rgb((r & 63) << 2, (g & 63) << 2, (b & 63) << 2);
 #if PICO_ON_DEVICE
                                 graphics_set_palette(first + i, vga_palette[first + i]);
 #endif
