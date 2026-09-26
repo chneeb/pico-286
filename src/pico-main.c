@@ -282,8 +282,21 @@ static int16_t last_dss_sample = 0;
  * data against a 22.6 us sample period - so this cannot only run once per
  * pass of the core1 loop. The display driver calls it via lcd_yield() while
  * it waits on DMA, which keeps sound and the PIT alive during the push. */
+// Longest observed interval between two pump calls, in microseconds. The
+// whole "unbuffered PWM starves at low clocks" theory rests on this exceeding
+// the sample period (22.7 us at 44.1 kHz); if it does not, samples are being
+// delivered on time and a crackle is coming from somewhere else entirely.
+uint32_t pump_max_gap_us;
+static uint64_t pump_last_us;
+
 static void __not_in_flash_func(core1_pump)(void) {
     const uint64_t tick = time_us_64();
+
+    if (pump_last_us) {
+        const uint32_t gap = (uint32_t) (tick - pump_last_us);
+        if (gap > pump_max_gap_us) pump_max_gap_us = gap;
+    }
+    pump_last_us = tick;
 
 #ifdef PICOCALC
     // CGA status register (0x3DA). The BIOS teletype waits for a FULL low->high
@@ -1262,7 +1275,7 @@ int main(void) {
                 }
                 char line[TEXTMODE_COLS + 1];
                 snprintf(line, sizeof line,
-                         "%luMHz %sV PS%lu e%lu F%lu LCD%lu %lufps %luK SB%lu BL%d%s%s",
+                         "%luMHz %sV PS%lu e%lu F%lu LCD%lu %lufps %luK g%lu SB%lu BL%d up%lu%s%s",
                          (unsigned long) (clock_get_hz(clk_sys) / MHZ),
                          (vi >= 0 && vi < (int) (sizeof volts / sizeof *volts))
                              ? volts[vi] : "?",
@@ -1278,14 +1291,20 @@ int main(void) {
                          (unsigned long) picocalc_lcd_achieved_mhz(),
                          (unsigned long) (frames * 1000000ull / (perf_now - perf_last)),
                          (unsigned long) (instr / (perf_now - perf_last)),
+                         // Worst pump gap since the last update, microseconds.
+                         (unsigned long) pump_max_gap_us,
                          // Sound Blaster sample rate in kHz. A game that asks
                          // for an absurd one is the difference between smooth
                          // and unplayable, and it is otherwise invisible.
                          (unsigned long) (1000000ul / timeconst / 1000ul),
                          cfg_backlight >= 0 ? cfg_backlight : 255,
+                         // Uptime in minutes, so a battery reading can be
+                         // turned into a rate without timing it by hand.
+                         (unsigned long) (perf_now / 60000000ull),
                          bat,
                          picocalc_mouse_mode() ? " MOUSE" : "");
                 picocalc_lcd_set_status(line);
+                pump_max_gap_us = 0;
             }
             if (picocalc_lcd_overlay)
             printf("%lu KIPS %lu fps@%luMHz %04X:%04X PS %luMHz e=%lu\n",

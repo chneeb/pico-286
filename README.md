@@ -494,7 +494,7 @@ line, applied **in file order** — so when lowering both, put `CPU` before
 | `VREG` | Core voltage, `vreg_voltage` enum ordinal (see `PICOCALC_VREG_VAL`). Prefer the build option for finding a floor. |
 | `BACKLIGHT` | Panel backlight, 0–255. Applied after `keyboard_init()`, which owns it. |
 | `KBD_BACKLIGHT` | Keyboard backlight, 0–255. |
-| `LCD_MHZ` | Panel bit rate, 10–120. No exact-divider constraint unlike PSRAM — a fractional PIO divider here costs jitter, not correctness — and it fails visibly (shearing, noise) rather than by corrupting, so it is clamped rather than refused. |
+| `LCD_MHZ` | Panel bit rate, 10–120. Unlike PSRAM a fractional divider is *tolerated* rather than refused, because it fails visibly rather than by corrupting — but it is not free. The divider is `clk_sys / (2 x LCD_MHZ)`, and at 240 MHz the default 75 gives **1.6**, which dithers badly enough to flicker; `LCD_MHZ=60` gives exactly 2.0 and cures it (device-verified). The jitter is a smaller fraction of a bit period at higher dividers, which is why 360 (2.4) and 396 (2.64) have not shown artefacts. If a clock does flicker, pick a value that divides exactly. |
 | `STATUSBAR` | `1` shows a permanent stats bar across the top: clock, core voltage, PSRAM rate and error count, flash rate, panel clock, fps, KIPS, Sound Blaster rate in kHz, backlight, battery, and `MOUSE` while Ctrl-Alt-M mode is active. It sits in the letterbox margin every mode leaves (40 rows in the worst case), so it costs no picture area. **Every value is read back from hardware** — see below. |
 | `DEBUG_OVERLAY` | `1` paints `printf()` output over the bottom 80 rows, and enables the throughput line. This *does* cover picture. |
 | `PSRAM_SPI` | PSRAM **SPI bit rate** in MHz — the number the sweep build prints, half the state-machine clock. Ignored, with a message, unless it divides the system clock exactly. |
@@ -554,9 +554,17 @@ CPU=240
 VREG=15
 PSRAM_SPI=60
 PSRAM_FUDGE=0
+LCD_MHZ=60
 BACKLIGHT=64
 STATUSBAR=1
 ```
+
+`LCD_MHZ=60` is required here, not optional: at 240 MHz the default 75 gives a
+panel divider of 1.6, which dithers enough to flicker visibly. 60 gives exactly
+2.0. The other profiles leave it at the default, where the divider is 2.0
+(300), 2.4 (360) or 2.64 (396) and no artefacts have been seen — exact values
+for those, if ever needed, are 75, 90 and 99, or 60 and 66 for a slower but
+still exact divider.
 
 | | Low | Medium | High | Max |
 |---|---|---|---|---|
@@ -565,17 +573,20 @@ STATUSBAR=1
 | PSRAM SPI | 60 MHz | 75 MHz | 90 MHz | 99 MHz |
 | Flash | 60 MHz | 75 MHz | 90 MHz | 99 MHz |
 | Relative core power | 0.80 | 1.00 | 1.20 | 2.00 |
-| Audio | stutters | stutters | stutters | **clean** |
+| Audio | crackles | crackles | crackles | crackles |
 | Verified | derived | device-verified | device-verified | device-verified |
 
 Relative power is `(V/1.30)² x (f/300)`. Note how flat Low → High is against
 the jump to Max: within one voltage the cost is linear in clock, but Max pays
 `(1.60/1.30)² = 1.51` before a single extra megahertz is counted.
 
-**Audio only behaves at 396 MHz.** PWM output is unbuffered and paced by how
-often core1 calls the pump, so every profile below Max trades sound quality for
-battery. That is a bug, not a law — see the PWM audio known issue — and fixing
-it properly would decouple the two.
+**Audio crackles at every clock.** An early reading suggested 396 MHz was clean
+and that the fault was core1 starving the unbuffered PWM output at lower
+clocks; retesting with the clock confirmed on screen showed crackle at 396 too,
+so that explanation is wrong. The `g` field in the status bar reports the worst
+gap between audio pump calls in microseconds — if it stays below the 22.7 us
+sample period, samples are being delivered on time and the fault is in sample
+*generation*, not delivery. Unresolved; see the PWM audio known issue.
 
 ##### Order matters, and getting it wrong can hang
 
